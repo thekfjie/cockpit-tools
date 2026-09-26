@@ -1663,6 +1663,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings
             upstream_model: "deepseek-v4-pro".to_string(),
             upstream_models: vec!["deepseek-v4-pro".to_string()],
             wire_api: Some("chat_completions".to_string()),
+            supports_remote_compaction: false,
             supports_vision: false,
             model_capabilities: HashMap::new(),
             vision_routing_model: None,
@@ -3784,6 +3785,7 @@ http_headers = { "x-cockpit-instance-id" = "default" }
             "agt_codex_test".to_string(),
             None,
             true,
+            false,
         );
         assert!(account.api_supports_websockets);
         assert_eq!(account.api_wire_api.as_deref(), Some("responses"));
@@ -3795,6 +3797,14 @@ http_headers = { "x-cockpit-instance-id" = "default" }
             account.api_provider_id.as_deref(),
             Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID)
         );
+        let remote_account = build_runtime_account(
+            "http://127.0.0.1:1455/v1".to_string(),
+            "agt_codex_test".to_string(),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(remote_account.api_provider_name.as_deref(), Some("OpenAI"));
     }
 
     #[test]
@@ -3810,6 +3820,7 @@ http_headers = { "x-cockpit-instance-id" = "default" }
                 upstream_model: "deepseek-v4-pro".to_string(),
                 upstream_models: vec!["deepseek-v4-pro".to_string()],
                 wire_api: Some("chat_completions".to_string()),
+                supports_remote_compaction: false,
                 supports_vision: false,
             model_capabilities: HashMap::new(),
             vision_routing_model: None,
@@ -3859,6 +3870,7 @@ http_headers = { "x-cockpit-instance-id" = "default" }
                     upstream_model: "gpt-5.5".to_string(),
                     upstream_models: vec!["gpt-5.5".to_string(), "grok-4.6".to_string()],
                     wire_api: Some("responses".to_string()),
+                    supports_remote_compaction: false,
                     supports_vision: false,
                     model_capabilities: HashMap::new(),
                     vision_routing_model: None,

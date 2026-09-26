@@ -1634,6 +1634,7 @@ fn provider_gateway_for_account(
             upstream_model: upstream_models.first().cloned().unwrap_or_default(),
             upstream_models,
             wire_api: Some("responses".to_string()),
+            supports_remote_compaction: false,
             supports_vision: account.api_supports_vision,
             model_capabilities,
             vision_routing_model: None,
@@ -1717,6 +1718,9 @@ fn provider_gateway_for_account(
         upstream_model: upstream_models.first().cloned().unwrap_or_default(),
         upstream_models,
         wire_api: Some(provider_gateway_wire_api_for_account(account)),
+        supports_remote_compaction: model_provider_key_compaction_mode(account).as_deref()
+            == Some("remote")
+            && provider_gateway_wire_api_for_account(account) == "responses",
         supports_vision: gateway_supports_vision,
         model_capabilities,
         vision_routing_model: account
@@ -3311,10 +3315,61 @@ pub fn has_running_persisted_mixed_model_gateway() -> bool {
         })
 }
 
-async fn stop_all_provider_gateways_for_app_shutdown() -> Vec<GatewayBindEndpoint> {
+async fn stop_all_provider_gateways_for_app_shutdown() -> (Vec<GatewayBindEndpoint>, bool) {
     let _guard = provider_gateway_lifecycle_lock().lock().await;
     let mut preserve_mixed_profiles = HashSet::new();
+    let mut preserve_runtime_keys = HashSet::new();
     let mut configured_profiles = HashMap::new();
+    let targets = match collect_instance_gateway_targets() {
+        Ok(targets) => targets,
+        Err(error) => {
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess][instance-gateway] 退出前读取实例失败，保留实例网关: {}",
+                error
+            ));
+            return (Vec::new(), true);
+        }
+    };
+    let process_entries = crate::modules::process::collect_codex_process_entries();
+    for target in targets {
+        let profile_key = normalize_profile_dir_key(&target.profile_dir);
+        configured_profiles.insert(profile_key.clone(), target.profile_dir.clone());
+        if instance_target_is_running(&target, &process_entries) {
+            preserve_runtime_keys.insert(provider_gateway_runtime_key(
+                &target.profile_dir,
+                &target.runtime_id,
+            ));
+            if target.kind == INSTANCE_GATEWAY_KIND_MIXED_MODEL {
+                preserve_mixed_profiles.insert(profile_key);
+            }
+        } else {
+            let restore = if target.kind == INSTANCE_GATEWAY_KIND_MIXED_MODEL {
+                restore_mixed_model_gateway_profile(&target.profile_dir).and_then(|restored| {
+                    if restored {
+                        Ok(())
+                    } else {
+                        ensure_profile_no_longer_uses_local_access(&target.profile_dir).map(|_| ())
+                    }
+                })
+            } else {
+                cleanup_provider_gateway_profile_model_overrides(&target.profile_dir)
+                    .and_then(|_| restore_profile_takeover_backup_for_dir(&target.profile_dir).map(|_| ()))
+            };
+            if let Err(error) = restore {
+                logger::log_codex_api_warn(&format!(
+                    "[CodexLocalAccess][provider-gateway] 退出前恢复实例配置失败，保留网关: profile={}, error={}",
+                    target.profile_dir.display(), error
+                ));
+                preserve_runtime_keys.insert(provider_gateway_runtime_key(
+                    &target.profile_dir,
+                    &target.runtime_id,
+                ));
+                if target.kind == INSTANCE_GATEWAY_KIND_MIXED_MODEL {
+                    preserve_mixed_profiles.insert(profile_key);
+                }
+            }
+        }
+    }
     if let Ok(default_settings) = crate::modules::codex_instance::load_default_settings() {
         if let Ok(profile_dir) = crate::modules::codex_instance::get_default_codex_home() {
             configured_profiles.insert(normalize_profile_dir_key(&profile_dir), profile_dir.clone());
@@ -3355,11 +3410,12 @@ async fn stop_all_provider_gateways_for_app_shutdown() -> Vec<GatewayBindEndpoin
                 let Some((profile_key, runtime_id)) = runtime_key.rsplit_once('\n') else {
                     return true;
                 };
-                let preserve = runtime_id == MIXED_MODEL_ROUTING_RUNTIME_ID
-                    && preserve_mixed_profiles.contains(profile_key);
+                let preserve = preserve_runtime_keys.contains(*runtime_key)
+                    || (runtime_id == MIXED_MODEL_ROUTING_RUNTIME_ID
+                        && preserve_mixed_profiles.contains(profile_key));
                 if preserve {
                     logger::log_codex_api_info(&format!(
-                        "[CodexLocalAccess][mixed-model-routing] Codex 仍在运行，应用退出后保留 sidecar: profile={}",
+                        "[CodexLocalAccess][instance-gateway] 应用退出后保留 sidecar: profile={}",
                         profile_key
                     ));
                 }
@@ -3389,7 +3445,7 @@ async fn stop_all_provider_gateways_for_app_shutdown() -> Vec<GatewayBindEndpoin
             endpoints.push(endpoint);
         }
     }
-    endpoints
+    (endpoints, !preserve_runtime_keys.is_empty() || !preserve_mixed_profiles.is_empty())
 }
 
 pub async fn mixed_model_gateway_runtime_is_healthy(profile_dir: &Path) -> bool {

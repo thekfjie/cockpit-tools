@@ -2366,6 +2366,19 @@ fn apply_api_key_compaction_for_dir(base_dir: &Path, account: &CodexAccount) -> 
             table.remove("token_budget");
         }
     }
+    let provider_id = doc.get("model_provider")
+        .and_then(|item| item.as_str())
+        .map(str::to_string);
+    if let Some(provider_id) = provider_id {
+        if let Some(provider) = doc["model_providers"][provider_id.as_str()].as_table_mut() {
+            let current_name = provider.get("name").and_then(|item| item.as_str()).unwrap_or_default();
+            if mode == "remote" && account.api_wire_api.as_deref() != Some("chat_completions") {
+                provider["name"] = toml_edit::value("OpenAI");
+            } else if current_name == "OpenAI" {
+                provider["name"] = toml_edit::value("OpenAI (local)");
+            }
+        }
+    }
     let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
     crate::modules::codex_config_format::write_codex_config_toml_atomic(&config_path, &content)
         .map_err(|error| format!("保存 API Key 压缩方式失败: {}", error))
