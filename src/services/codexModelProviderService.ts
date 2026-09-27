@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { CodexAccount, CodexExperimentalModelDefinition } from '../types/codex';
+import { normalizeCodexModelCatalogSourceInfo, type CodexModelCatalogSourceInfo } from './codexModelCatalogSourceService';
 import type {
   CodexProviderEnableModePreference,
   CodexProviderWireApi,
@@ -35,6 +36,7 @@ export interface CodexModelProviderApiKey {
   modelAutoCompactTokenLimits?: Record<string, number>;
   compactionMode?: 'auto' | 'remote' | 'local';
   modelDefinitions?: CodexExperimentalModelDefinition[];
+  modelSource?: CodexModelCatalogSourceInfo;
   defaultModelId?: string;
   createdAt: number;
   updatedAt: number;
@@ -160,6 +162,7 @@ export function resolveCodexModelProviderKeyModels(
       ? apiKey.compactionMode
       : 'local',
     modelDefinitions: apiKey?.modelDefinitions,
+    modelSource: apiKey?.modelSource,
     defaultModelId: apiKey?.defaultModelId,
   } as const;
 }
@@ -403,6 +406,7 @@ function cloneProviders(providers: CodexModelProvider[]): CodexModelProvider[] {
       modelDefinitions: apiKey.modelDefinitions?.map((model) => ({ ...model,
         reasoning_efforts: model.reasoning_efforts ? [...model.reasoning_efforts] : undefined,
       })),
+      modelSource: apiKey.modelSource ? { ...apiKey.modelSource } : undefined,
     })),
   }));
 }
@@ -434,6 +438,9 @@ function toValidApiKeys(value: unknown, now: number): CodexModelProviderApiKey[]
         ? (item as { modelDefinitions: CodexExperimentalModelDefinition[] }).modelDefinitions
             .filter((model) => model && typeof model.model_id === 'string')
         : undefined,
+      modelSource: normalizeCodexModelCatalogSourceInfo(
+        (item as { modelSource?: unknown }).modelSource,
+      ),
       defaultModelId: sanitizeName(String((item as { defaultModelId?: unknown }).defaultModelId ?? '')) || undefined,
       createdAt: Number((item as { createdAt?: unknown }).createdAt ?? now),
       updatedAt: Number((item as { updatedAt?: unknown }).updatedAt ?? now),
@@ -704,6 +711,7 @@ export async function updateCodexModelProviderApiKeyModels(
     modelAutoCompactTokenLimits?: Record<string, number>;
     compactionMode?: 'auto' | 'remote' | 'local';
     modelDefinitions?: CodexExperimentalModelDefinition[];
+    modelSource?: CodexModelCatalogSourceInfo;
     defaultModelId?: string | null;
   },
 ): Promise<CodexModelProvider> {
@@ -727,6 +735,9 @@ export async function updateCodexModelProviderApiKeyModels(
     : 'local';
   if (input.modelDefinitions !== undefined) {
     apiKey.modelDefinitions = input.modelDefinitions.map((model) => ({ ...model }));
+  }
+  if (input.modelSource !== undefined) {
+    apiKey.modelSource = { ...input.modelSource };
   }
   if (input.defaultModelId !== undefined) {
     apiKey.defaultModelId = input.defaultModelId || undefined;

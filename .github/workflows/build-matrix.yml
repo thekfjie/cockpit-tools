@@ -179,6 +179,10 @@ jobs:
         run: |
           cargo test instance_configuration_save --lib
           cargo test quick_config_catalog_only_context_preservation --lib
+      - name: 🧪 Test Windows model management migration
+        if: matrix.label == 'windows-latest'
+        run: cargo test model_management_default_off_migration --lib
+        working-directory: src-tauri
 
       - name: 🐹 Go setup
         uses: actions/setup-go@v5

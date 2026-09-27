@@ -5,13 +5,15 @@ import { useTranslation } from "react-i18next";
 import {
   listCodexModelCatalogSourceModels,
   type CodexModelCatalogSource,
+  type CodexModelCatalogSourceInfo,
 } from "../../services/codexModelCatalogSourceService";
 import type { CodexExperimentalModelDefinition } from "../../types/codex";
 
 type Props = {
   accountId?: string | null;
   instanceId?: string | null;
-  onReplace: (models: CodexExperimentalModelDefinition[], source: CodexModelCatalogSource) => void;
+  onReplace: (models: CodexExperimentalModelDefinition[], source: CodexModelCatalogSourceInfo) => void;
+  sourceInfo?: CodexModelCatalogSourceInfo | null;
   onFetchUpstream?: () => Promise<CodexExperimentalModelDefinition[]>;
   hasExistingModels: boolean;
   disabled?: boolean;
@@ -21,14 +23,13 @@ export function CodexModelCatalogSourceControls({
   accountId,
   instanceId,
   onReplace,
+  sourceInfo,
   onFetchUpstream,
   hasExistingModels,
   disabled = false,
 }: Props) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState<CodexModelCatalogSource | null>(null);
-  const [source, setSource] = useState<CodexModelCatalogSource | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const replaceFrom = async (nextSource: CodexModelCatalogSource) => {
@@ -63,9 +64,13 @@ export function CodexModelCatalogSourceControls({
           t("codex.modelManagement.sourceEmpty", "来源没有返回可用模型，已保留当前列表。"),
         );
       }
-      onReplace(models, nextSource);
-      setSource(nextSource);
-      setUpdatedAt(Date.now());
+      onReplace(models, {
+        source: nextSource,
+        fetchedAt: Date.now(),
+        cacheInfo: nextSource === "codex"
+          ? "已避开本机缓存；Codex 服务端缓存未知"
+          : nextSource === "upstream" ? "上游缓存状态未知" : "随包预设",
+      });
     } catch (fetchError) {
       setError(String(fetchError).replace(/^Error:\s*/, ""));
     } finally {
@@ -73,11 +78,11 @@ export function CodexModelCatalogSourceControls({
     }
   };
 
-  const sourceLabel = source === "codex"
+  const sourceLabel = sourceInfo?.source === "codex"
     ? t("codex.modelManagement.sourceCodex", "Codex 端 model/list")
-    : source === "upstream"
+    : sourceInfo?.source === "upstream"
       ? t("codex.modelManagement.sourceUpstream", "上游 /v1/models")
-      : source === "cockpit"
+      : sourceInfo?.source === "cockpit"
         ? t("codex.modelManagement.sourceCockpit", "Cockpit 预设")
         : t("codex.modelManagement.sourceUnknown", "来源未知");
 
@@ -103,7 +108,9 @@ export function CodexModelCatalogSourceControls({
       </div>
       <small className="codex-model-catalog-source-controls__status">
         {t("codex.modelManagement.sourceStatus", "当前来源：{{source}}", { source: sourceLabel })}
-        {updatedAt ? ` · ${new Date(updatedAt).toLocaleString()}` : ""}
+        {sourceInfo?.manuallyAdjusted ? " · 基于此来源手动调整" : ""}
+        {sourceInfo?.fetchedAt ? ` · ${new Date(sourceInfo.fetchedAt).toLocaleString()}` : ""}
+        {sourceInfo?.cacheInfo ? ` · ${sourceInfo.cacheInfo}` : ""}
       </small>
       {error && <span className="form-error">{error}</span>}
     </div>

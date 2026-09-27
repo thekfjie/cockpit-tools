@@ -1779,10 +1779,9 @@ wire_api = "responses"
         fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
     }
 
-    /// 一次性迁移：把历史遗留的「模型管理」关闭并恢复跟随官方模型目录，
-    /// 只执行一次，且保留用户已保存的模型清单（重新开启后仍可用）。
+    /// 用户明确开启的模型管理不得被迁移关闭。
     #[test]
-    fn model_management_default_off_migration_runs_once_and_keeps_definitions() {
+    fn model_management_default_off_migration_preserves_explicit_enablement() {
         let base_dir = make_temp_dir("codex-model-management-default-off-migration");
         fs::write(base_dir.join("config.toml"), "model = \"gpt-5.6-sol\"\n")
             .expect("write base config");
@@ -1796,16 +1795,10 @@ wire_api = "responses"
         .expect("enable managed catalog");
         assert!(super::experimental_model_policy_enabled(&base_dir));
 
-        assert!(
-            super::migrate_model_management_default_off_once(&base_dir).expect("run migration"),
-            "首次执行必须生效"
-        );
-        assert!(!super::experimental_model_policy_enabled(&base_dir));
-        assert!(!base_dir
-            .join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)
-            .exists());
+        assert!(!super::migrate_model_management_default_off_once(&base_dir).expect("run migration"));
+        assert!(super::experimental_model_policy_enabled(&base_dir));
         let config = fs::read_to_string(base_dir.join("config.toml")).expect("read config");
-        assert!(!config.contains("model_catalog_json"));
+        assert!(config.contains("model_catalog_json"));
         assert!(config.contains("model = \"gpt-5.6-sol\""));
         assert_eq!(
             super::read_experimental_model_definitions(&base_dir).len(),
@@ -1813,7 +1806,26 @@ wire_api = "responses"
             "用户模型清单必须保留"
         );
 
-        // 迁移只执行一次：之后用户自己再开启模型管理不再被关闭。
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn model_management_default_off_migration_backs_up_and_clears_stale_reference() {
+        let base_dir = make_temp_dir("codex-model-management-stale-reference-migration");
+        let original = "model_catalog_json = \"cockpit-model-catalog.json\"\nmodel_context_window = 2760000\n";
+        fs::write(base_dir.join("config.toml"), original).expect("write stale config");
+        assert!(super::migrate_model_management_default_off_once(&base_dir).expect("run migration"));
+        let config = fs::read_to_string(base_dir.join("config.toml")).expect("read config");
+        assert!(!config.contains("model_catalog_json"));
+        assert!(config.contains("model_context_window = 2760000"));
+        assert_eq!(
+            fs::read_to_string(base_dir.join("config.toml.cockpit-model-management-stale-reference.bak"))
+                .expect("read migration backup"),
+            original,
+        );
+        assert!(!super::migrate_model_management_default_off_once(&base_dir).expect("run again"));
+
+        let definitions = super::default_experimental_model_definitions(&base_dir);
         super::save_model_catalog_for_base_dir_preserving_context(
             &base_dir,
             true,
@@ -1821,10 +1833,7 @@ wire_api = "responses"
             None,
         )
         .expect("re-enable managed catalog");
-        assert!(
-            !super::migrate_model_management_default_off_once(&base_dir).expect("run migration"),
-            "已迁移过的 profile 不能再次执行"
-        );
+        assert!(!super::migrate_model_management_default_off_once(&base_dir).expect("run migration"));
         assert!(super::experimental_model_policy_enabled(&base_dir));
 
         fs::remove_dir_all(&base_dir).expect("cleanup temp dir");

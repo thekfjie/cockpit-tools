@@ -3,7 +3,8 @@
 use crate::models::codex::{
     CodexAccount, CodexAccountIndex, CodexAccountSummary, CodexAgentIdentity, CodexApiModelMapping,
     CodexApiProviderMode, CodexAppSpeed, CodexAuthFile, CodexAuthMode, CodexAuthTokens,
-    CodexExperimentalModelDefinition, CodexJwtPayload, CodexQuickConfig, CodexTokens,
+    CodexExperimentalModelDefinition, CodexJwtPayload, CodexModelCatalogSourceInfo,
+    CodexQuickConfig, CodexTokens,
 };
 use crate::modules::apikey_fun_links::{
     normalize_legacy_apikey_fun_url, APIKEY_FUN_LEGACY_PROVIDER_BASE_URL,

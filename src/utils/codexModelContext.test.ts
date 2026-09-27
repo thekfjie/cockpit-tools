@@ -4,6 +4,7 @@ import {
   deriveAutoCompactTokenLimit,
   deriveAutoCompactTokenLimitInput,
   resolveStoredCompactLimitInput,
+  validateEffectiveModelContexts,
   validateModelContext,
 } from './codexModelContext';
 
@@ -42,9 +43,10 @@ test('stored config without a usable compact limit falls back to the 90% value',
   assert.equal(resolveStoredCompactLimitInput(undefined, undefined), '');
 });
 
-test('model context rejects missing, non-integer, unsafe and out-of-range values', () => {
+test('model context accepts independent overrides and rejects invalid values', () => {
+  assert.equal(validateModelContext({ context_window: 100 }), null);
+  assert.equal(validateModelContext({ auto_compact_token_limit: 50 }), null);
   for (const model of [
-    { context_window: 100 }, { auto_compact_token_limit: 50 },
     { context_window: 0, auto_compact_token_limit: 1 },
     { context_window: 1.5, auto_compact_token_limit: 1 },
     { context_window: Infinity, auto_compact_token_limit: 1 },
@@ -54,4 +56,13 @@ test('model context rejects missing, non-integer, unsafe and out-of-range values
     { context_window: 100, auto_compact_token_limit: 100 },
     { context_window: 100, auto_compact_token_limit: 101 },
   ]) assert.ok(validateModelContext(model), JSON.stringify(model));
+});
+
+test('effective context applies global values to models without overrides', () => {
+  const models = [{ model_id: 'gpt-6-sol', display_name: 'GPT-6 Sol' }];
+  assert.equal(validateEffectiveModelContexts(models, 2_760_000, 2_750_000), null);
+  assert.match(
+    validateEffectiveModelContexts([{ ...models[0], context_window: 1_050_000 }], 2_760_000, 2_750_000) ?? '',
+    /gpt-6-sol.*2750000.*1050000/,
+  );
 });
