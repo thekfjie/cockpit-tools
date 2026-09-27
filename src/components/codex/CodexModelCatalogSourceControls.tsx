@@ -1,6 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   listCodexModelCatalogSourceModels,
@@ -12,6 +12,7 @@ import type { CodexExperimentalModelDefinition } from "../../types/codex";
 type Props = {
   accountId?: string | null;
   instanceId?: string | null;
+  scopeKey?: string | null;
   onReplace: (models: CodexExperimentalModelDefinition[], source: CodexModelCatalogSourceInfo) => void;
   sourceInfo?: CodexModelCatalogSourceInfo | null;
   onFetchUpstream?: () => Promise<CodexExperimentalModelDefinition[]>;
@@ -22,6 +23,7 @@ type Props = {
 export function CodexModelCatalogSourceControls({
   accountId,
   instanceId,
+  scopeKey,
   onReplace,
   sourceInfo,
   onFetchUpstream,
@@ -31,24 +33,15 @@ export function CodexModelCatalogSourceControls({
   const { t } = useTranslation();
   const [busy, setBusy] = useState<CodexModelCatalogSource | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const currentScope = `${instanceId ?? ""}:${accountId ?? ""}:${scopeKey ?? ""}`;
+  const currentScopeRef = useRef(currentScope);
+  currentScopeRef.current = currentScope;
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
 
   const replaceFrom = async (nextSource: CodexModelCatalogSource) => {
     if (busy || disabled) return;
-    if (hasExistingModels) {
-      const confirmed = await confirmDialog(
-        t(
-          "codex.modelManagement.sourceReplaceConfirm",
-          "刷新将覆盖当前模型列表，以及逐模型上下文和压缩阈值。是否继续？",
-        ),
-        {
-          title: t("codex.modelManagement.sourceReplaceTitle", "覆盖模型配置？"),
-          okLabel: t("common.confirm", "继续"),
-          cancelLabel: t("common.cancel", "取消"),
-          kind: "warning",
-        },
-      );
-      if (!confirmed) return;
-    }
+    const requestScope = currentScope;
     setBusy(nextSource);
     setError(null);
     try {
@@ -64,6 +57,21 @@ export function CodexModelCatalogSourceControls({
           t("codex.modelManagement.sourceEmpty", "来源没有返回可用模型，已保留当前列表。"),
         );
       }
+      if (currentScopeRef.current !== requestScope || disabledRef.current) return;
+      if (hasExistingModels) {
+        const confirmed = await confirmDialog(
+          t("codex.modelManagement.sourceReplaceConfirm",
+            "刷新将覆盖当前模型列表，以及逐模型上下文和压缩阈值。是否继续？"),
+          {
+            title: t("codex.modelManagement.sourceReplaceTitle", "覆盖模型配置？"),
+            okLabel: t("common.confirm", "继续"),
+            cancelLabel: t("common.cancel", "取消"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
+      }
+      if (currentScopeRef.current !== requestScope || disabledRef.current) return;
       const modelMetadata = Object.fromEntries(models.flatMap((model) => {
         if (!model.context_window && !model.auto_compact_token_limit) return [];
         return [[model.model_id, {
