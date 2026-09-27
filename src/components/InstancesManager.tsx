@@ -61,6 +61,8 @@ import { scrollElementIntoView } from "../utils/reducedMotion";
 import { useEscClose } from "../hooks/useEscClose";
 import { useEnterConfirm } from "../hooks/useEnterConfirm";
 import { CodexExperimentalModelEditor } from "./codex/CodexExperimentalModelEditor";
+import { CodexModelCatalogSourceControls } from "./codex/CodexModelCatalogSourceControls";
+import { listModelProviderModels } from "../services/modelProviderUsageService";
 import {
   CodexModelRoutingFields,
   CODEX_MODEL_ROUTE_NAMESPACE_PATTERN,
@@ -3697,6 +3699,34 @@ export function InstancesManager<TAccount extends AccountLike>({
                           <span className="instance-codex-experimental-model__switch-track" />
                         </label>
                       </div>
+                      {(formExperimentalModelCatalogEnabled || formModelRoutingEnabled) && (
+                        <CodexModelCatalogSourceControls
+                          accountId={formBindAccountId || null}
+                          instanceId={editing?.id ?? null}
+                          hasExistingModels={formExperimentalModels.length > 0}
+                          disabled={actionLoading === editing?.id}
+                          onReplace={(nextModels) => {
+                            setFormExperimentalModels(nextModels);
+                            setFormExperimentalDefaultModelId(nextModels[0]?.model_id ?? null);
+                            setFormExperimentalModelsError(null);
+                            setFormCodexQuickConfigError(null);
+                          }}
+                          onFetchUpstream={async () => {
+                            const account = accounts.find((item) => item.id === formBindAccountId);
+                            if (!account?.api_base_url || !account.openai_api_key) {
+                              throw new Error("当前实例没有绑定 API Key 账号");
+                            }
+                            const result = await listModelProviderModels({
+                              baseUrl: account.api_base_url,
+                              apiKey: account.openai_api_key,
+                            });
+                            return result.models.map((model) => ({
+                              model_id: model.id,
+                              display_name: model.displayName || model.id,
+                            }));
+                          }}
+                        />
+                      )}
                       {(formExperimentalModelCatalogEnabled || formModelRoutingEnabled) && (
                         <CodexExperimentalModelEditor
                           models={formExperimentalModels}

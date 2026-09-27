@@ -110,7 +110,9 @@ import {
   resolveCodexContextOverridePreset,
 } from "./CodexContextOverrideEditor";
 import { CodexExperimentalModelEditor } from "./CodexExperimentalModelEditor";
+import { CodexModelCatalogSourceControls } from "./CodexModelCatalogSourceControls";
 import { getCodexExperimentalModelErrorMessage } from "../../utils/codexExperimentalModel";
+import { listModelProviderModels } from "../../services/modelProviderUsageService";
 import { CodexSessionVisibilityRepairModal } from "./CodexSessionVisibilityRepairModal";
 import "./CodexLaunchPreviewModal.css";
 
@@ -1155,6 +1157,19 @@ export function CodexLaunchPreviewModal({
   const openModelConfig = useCallback(async () => {
     if (configBusy || (unavailable && !(account && isCodexApiKeyAccount(account)))) return;
     if (account && isCodexApiKeyAccount(account)) {
+      if (!catalogEnabled) {
+        const confirmed = await confirmDialog(
+          t("codex.modelManagement.enableConfirmDescription"),
+          {
+            title: t("codex.modelManagement.enableConfirmTitle", "开启模型管理？"),
+            okLabel: t("codex.modelManagement.enableConfirmAction", "开启并配置"),
+            cancelLabel: t("common.cancel", "取消"),
+            kind: "warning",
+          },
+        );
+        if (!confirmed) return;
+        setCatalogEnabled(true);
+      }
       const providers = await listCodexModelProviders();
       const accountBaseUrl = normalizeCodexModelProviderBaseUrl(account.api_base_url ?? '');
       const provider = providers.find((item) =>
@@ -1169,7 +1184,7 @@ export function CodexLaunchPreviewModal({
       setModelConfigSnapshot({ enabled: catalogEnabled, models, defaultModelId });
       setModelKeyProvider(provider);
       setModelKeyId(apiKey.id);
-      setModelKeyCompactionMode(apiKey.compactionMode ?? 'auto');
+      setModelKeyCompactionMode(apiKey.compactionMode === 'remote' ? 'remote' : 'local');
       setModels(definitionsForProviderKey(provider, apiKey));
       setDefaultModelId(apiKey.defaultModelId ?? resolveCodexModelProviderKeyModels(provider, apiKey).modelCatalog[0] ?? null);
       setNotice(null);
@@ -1215,6 +1230,7 @@ export function CodexLaunchPreviewModal({
     models,
     routingEnabled,
     setError,
+    t,
     unavailable,
   ]);
 
@@ -1274,7 +1290,7 @@ export function CodexLaunchPreviewModal({
               await syncCodexApiKeyProviderAccounts({
                 accountIds: [linked.id],
                 ...buildCodexModelProviderAccountSnapshot(savedProvider, selectedKey.name, selectedKey.apiKey),
-                apiSyncModelCatalogToCodex: true,
+                apiSyncModelCatalogToCodex: catalogEnabled,
               });
             }
           }
@@ -1309,7 +1325,7 @@ export function CodexLaunchPreviewModal({
       setModelConfigOpen(false);
       setModelsError(null);
     },
-    [accounts, defaultModelId, fetchAccounts, modelConfigSnapshot, modelKeyCompactionMode, modelKeyId, modelKeyProvider, models, routingEnabled, setError, t],
+    [accounts, catalogEnabled, defaultModelId, fetchAccounts, modelConfigSnapshot, modelKeyCompactionMode, modelKeyId, modelKeyProvider, models, routingEnabled, setError, t],
   );
 
   const openContextConfig = useCallback(() => {
@@ -2634,7 +2650,7 @@ export function CodexLaunchPreviewModal({
                       const changed = currentKey && (
                         JSON.stringify(models) !== JSON.stringify(currentModels) ||
                         defaultModelId !== (currentKey.defaultModelId ?? resolveCodexModelProviderKeyModels(modelKeyProvider, currentKey).modelCatalog[0] ?? null) ||
-                        modelKeyCompactionMode !== (currentKey.compactionMode ?? 'auto')
+                        modelKeyCompactionMode !== (currentKey.compactionMode === 'remote' ? 'remote' : 'local')
                       );
                       void (async () => {
                         if (changed && !await confirmDialog(
@@ -2643,7 +2659,7 @@ export function CodexLaunchPreviewModal({
                             okLabel: t('common.confirm', '继续'), cancelLabel: t('common.cancel', '取消') },
                         )) return;
                         setModelKeyId(key.id);
-                        setModelKeyCompactionMode(key.compactionMode ?? 'auto');
+                        setModelKeyCompactionMode(key.compactionMode === 'remote' ? 'remote' : 'local');
                         setModels(definitionsForProviderKey(modelKeyProvider, key));
                         setDefaultModelId(key.defaultModelId ?? resolveCodexModelProviderKeyModels(modelKeyProvider, key).modelCatalog[0] ?? null);
                       })();
@@ -2668,6 +2684,32 @@ export function CodexLaunchPreviewModal({
               <ModalErrorMessage
                 message={catalogEnabled || modelKeyProvider ? modelsError : null}
                 scrollKey={errorScrollKey}
+              />
+              <CodexModelCatalogSourceControls
+                accountId={account?.id}
+                instanceId={instanceId}
+                hasExistingModels={models.length > 0}
+                disabled={configBusy || saving}
+                onReplace={(nextModels) => {
+                  setModels(nextModels);
+                  setDefaultModelId(nextModels[0]?.model_id ?? null);
+                  setModelsError(null);
+                  setNotice(null);
+                }}
+                onFetchUpstream={modelKeyProvider && modelKeyId
+                  ? async () => {
+                      const key = modelKeyProvider.apiKeys.find((item) => item.id === modelKeyId);
+                      if (!key) throw new Error("当前 API Key 不存在");
+                      const result = await listModelProviderModels({
+                        baseUrl: modelKeyProvider.baseUrl,
+                        apiKey: key.apiKey,
+                      });
+                      return result.models.map((model) => ({
+                        model_id: model.id,
+                        display_name: model.displayName || model.id,
+                      }));
+                    }
+                  : undefined}
               />
               <CodexExperimentalModelEditor
                 models={models}

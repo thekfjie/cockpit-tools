@@ -878,10 +878,7 @@ fn should_keep_official_catalog_window(slot: &ProviderGatewayModelSlot) -> bool 
     {
         return true;
     }
-    slot.client_model
-        .trim()
-        .eq_ignore_ascii_case(slot.upstream_model.trim())
-        && is_provider_model_shell_slug(&slot.client_model)
+    false
 }
 
 pub(crate) fn decorate_catalog_context_windows(

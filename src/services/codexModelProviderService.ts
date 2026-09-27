@@ -156,7 +156,9 @@ export function resolveCodexModelProviderKeyModels(
       ? apiKey.modelContextWindows ?? {}
       : provider.modelContextWindows ?? {},
     modelAutoCompactTokenLimits: apiKey?.modelAutoCompactTokenLimits ?? {},
-    compactionMode: apiKey?.compactionMode ?? 'auto',
+    compactionMode: apiKey?.compactionMode && apiKey.compactionMode !== 'auto'
+      ? apiKey.compactionMode
+      : 'local',
     modelDefinitions: apiKey?.modelDefinitions,
     defaultModelId: apiKey?.defaultModelId,
   } as const;
@@ -720,7 +722,9 @@ export async function updateCodexModelProviderApiKeyModels(
   apiKey.modelCatalog = catalog;
   apiKey.modelContextWindows = windows;
   apiKey.modelAutoCompactTokenLimits = limits;
-  apiKey.compactionMode = normalizeCompactionMode(input.compactionMode) ?? 'auto';
+  apiKey.compactionMode = normalizeCompactionMode(input.compactionMode) === 'remote'
+    ? 'remote'
+    : 'local';
   if (input.modelDefinitions !== undefined) {
     apiKey.modelDefinitions = input.modelDefinitions.map((model) => ({ ...model }));
   }

@@ -17,6 +17,59 @@ const CODEX_APP_SERVER_MACOS_EXECUTABLES: &[&str] = &[
 const CODEX_APP_SERVER_EXECUTABLE_ENV: &str = "CODEX_APP_SERVER_EXECUTABLE";
 const APP_SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 
+pub fn list_models(codex_home: &Path) -> Result<Vec<JsonValue>, String> {
+    let executable = official_app_server_executable()?;
+    let mut child = build_app_server_command(&executable, codex_home)
+        .spawn()
+        .map_err(|error| format!("启动 Codex app-server 失败: {}", error))?;
+    let stdout = child.stdout.take().ok_or("无法读取 Codex app-server stdout")?;
+    let stderr = child.stderr.take().ok_or("无法读取 Codex app-server stderr")?;
+    let mut stdin = child.stdin.take().ok_or("无法写入 Codex app-server stdin")?;
+    let (sender, receiver) = mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = sender.send(line);
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            crate::modules::logger::log_warn(&format!("[Codex model/list] {}", line));
+        }
+    });
+
+    let result = (|| {
+        send_request(&mut stdin, json!({
+            "method": "initialize", "id": 1,
+            "params": { "clientInfo": { "name": "cockpit-tools", "version": env!("CARGO_PKG_VERSION") },
+                        "capabilities": null }
+        }))?;
+        wait_for_response(&receiver, 1)?;
+        let mut models = Vec::new();
+        let mut cursor: Option<String> = None;
+        for request_id in 2..=21 {
+            send_request(&mut stdin, json!({
+                "method": "model/list", "id": request_id,
+                "params": { "cursor": cursor, "limit": 100, "includeHidden": false }
+            }))?;
+            let response = wait_for_response_value(&receiver, request_id)
+                .map_err(|error| error.message().to_string())?;
+            let result = response.get("result").ok_or("Codex model/list 缺少 result")?;
+            let page = result.get("data").and_then(JsonValue::as_array)
+                .ok_or("Codex model/list 缺少 data")?;
+            models.extend(page.iter().cloned());
+            let next = result.get("nextCursor").and_then(JsonValue::as_str).map(str::to_string);
+            if next.is_none() { return Ok(models); }
+            if next == cursor { return Err("Codex model/list 分页游标未推进".to_string()); }
+            cursor = next;
+        }
+        Err("Codex model/list 分页数量超出限制".to_string())
+    })();
+    finish_child(&mut child);
+    let _ = reader.join();
+    let _ = stderr_reader.join();
+    result
+}
+
 pub fn rebuild_thread_metadata(codex_home: &Path) -> Result<(), String> {
     let flow_started = Instant::now();
     crate::modules::logger::log_info(&format!(
