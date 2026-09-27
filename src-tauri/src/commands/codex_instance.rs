@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -35,9 +35,82 @@ use super::codex_instance_routing::{
 
 pub(crate) const DEFAULT_INSTANCE_ID: &str = "__default__";
 const CODEX_INSTANCE_LAUNCH_PROGRESS_EVENT: &str = "codex:instance-launch-progress";
+const MODEL_LIST_TEMP_PREFIX: &str = "cockpit-codex-model-list-";
+const MODEL_LIST_TEMP_MARKER: &str = ".cockpit-model-list-profile";
 static CODEX_INSTANCE_STARTS_IN_PROGRESS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static CODEX_INSTANCE_START_CANCEL_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static CODEX_INSTANCE_START_FLOW_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+struct ModelListTempProfile(Option<PathBuf>);
+
+impl ModelListTempProfile {
+    fn new() -> Result<Self, String> {
+        cleanup_stale_model_list_profiles();
+        let path = std::env::temp_dir().join(format!(
+            "{}{}", MODEL_LIST_TEMP_PREFIX, uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&path)
+            .map_err(|error| format!("创建 Codex 临时认证目录失败: {}", error))?;
+        let profile = Self(Some(path));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(profile.path(), fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("保护 Codex 临时认证目录失败: {}", error))?;
+        }
+        fs::write(profile.path().join(MODEL_LIST_TEMP_MARKER), b"")
+            .map_err(|error| format!("标记 Codex 临时认证目录失败: {}", error))?;
+        Ok(profile)
+    }
+
+    fn path(&self) -> &Path {
+        self.0.as_deref().expect("temporary profile is active")
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        let Some(path) = self.0.as_ref() else { return Ok(()); };
+        fs::remove_dir_all(path).map_err(|error| format!(
+            "清理 Codex 临时认证目录失败 ({}): {}", path.display(), error
+        ))?;
+        self.0 = None;
+        Ok(())
+    }
+}
+
+impl Drop for ModelListTempProfile {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
+fn cleanup_stale_model_list_profiles() {
+    let temp_dir = std::env::temp_dir();
+    let Ok(entries) = fs::read_dir(&temp_dir) else { return; };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(MODEL_LIST_TEMP_PREFIX)
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path.join(MODEL_LIST_TEMP_MARKER).is_file() {
+            continue;
+        }
+        let stale = entry.metadata().ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        if stale {
+            if let Err(error) = fs::remove_dir_all(&path) {
+                modules::logger::log_warn(&format!(
+                    "[Codex model/list] 清理过期临时认证目录失败: path={}, error={}",
+                    path.display(), error
+                ));
+            }
+        }
+    }
+}
 
 fn request_codex_instance_start_cancel(instance_id: &str) {
     CODEX_INSTANCE_START_CANCEL_REQUESTS
@@ -595,37 +668,20 @@ pub async fn codex_list_model_catalog_source_models(
                 .ok_or("绑定的 OAuth 账号不存在，请重新绑定")?
         };
 
-        let profile = if let Some(instance_id) = instance_id.as_deref() {
-            resolve_instance_base_dir(instance_id)?
-        } else {
-            modules::codex_instance::get_default_codex_home()?
-        };
-        let isolated_profile = std::env::temp_dir().join(format!(
-            "cockpit-codex-model-list-{}",
-            uuid::Uuid::new_v4()
-        ));
-        fs::create_dir_all(&isolated_profile)
-            .map_err(|error| format!("创建 Codex 临时配置失败: {}", error))?;
+        let mut isolated_profile = ModelListTempProfile::new()?;
         let isolated_result = (|| {
-            let config_path = isolated_profile.join("config.toml");
-            let source_config_path = profile.join("config.toml");
-            if source_config_path.is_file() {
-                let content = fs::read_to_string(&source_config_path)
-                    .map_err(|error| format!("读取当前实例配置失败: {}", error))?;
-                if !content.trim().is_empty() {
-                    let mut doc = modules::codex_config_format::read_codex_config_doc_from_str(&content)?;
-                    let _ = doc.remove("model_catalog_json");
-                    let _ = doc.remove("model_context_window");
-                    let _ = doc.remove("model_auto_compact_token_limit");
-                    let content = modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-                    modules::codex_config_format::write_codex_config_toml_atomic(&config_path, &content)?;
-                }
-            }
-            modules::codex_account::write_model_list_oauth_auth_file(&isolated_profile, &oauth)?;
-            modules::codex_official_app_server::list_models(&isolated_profile)
+            modules::codex_account::write_model_list_oauth_auth_file(isolated_profile.path(), &oauth)?;
+            modules::codex_official_app_server::list_models(isolated_profile.path())
         })();
-        let _ = fs::remove_dir_all(&isolated_profile);
-        let raw_models = isolated_result?;
+        let cleanup_result = isolated_profile.cleanup();
+        let raw_models = match (isolated_result, cleanup_result) {
+            (Ok(models), Ok(())) => models,
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(_), Err(error)) => return Err(error),
+            (Err(fetch_error), Err(cleanup_error)) => {
+                return Err(format!("{}; {}", fetch_error, cleanup_error));
+            }
+        };
         let mut seen = HashSet::new();
         let models = raw_models.into_iter().filter_map(|model| {
             let id = model.get("model").or_else(|| model.get("id"))?
@@ -896,6 +952,17 @@ async fn repair_session_visibility_for_selected_instance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_list_refresh_uses_only_a_temporary_profile() {
+        let profile = ModelListTempProfile::new().expect("create isolated profile");
+        let path = profile.path().to_path_buf();
+        assert!(path.join(MODEL_LIST_TEMP_MARKER).is_file());
+        assert!(!path.join("config.toml").exists());
+        fs::write(path.join("auth.json"), b"test-auth").expect("write temporary auth");
+        drop(profile);
+        assert!(!path.exists(), "temporary credentials must be removed");
+    }
 
     struct TestDataDirGuard {
         root: PathBuf,
