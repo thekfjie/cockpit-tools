@@ -11,7 +11,8 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::models::codex::{
-    CodexAccount, CodexAppSpeed, CodexExperimentalModelDefinition, CodexQuickConfig,
+    CodexAccount, CodexAppSpeed, CodexExperimentalModelDefinition,
+    CodexModelCatalogSourceInfo, CodexQuickConfig,
 };
 use crate::models::{
     CodexInstanceModelRouting, DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile,
@@ -525,6 +526,19 @@ fn resolve_instance_base_dir(instance_id: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
+pub async fn codex_save_instance_model_catalog_source(
+    instance_id: String,
+    source: CodexModelCatalogSourceInfo,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base_dir = resolve_instance_base_dir(&instance_id)?;
+        modules::codex_account::save_model_catalog_source_for_base_dir(&base_dir, source)
+    })
+    .await
+    .map_err(|error| format!("保存模型来源后台任务失败: {}", error))?
+}
+
+#[tauri::command]
 pub async fn codex_list_model_catalog_source_models(
     source: String,
     account_id: Option<String>,
@@ -605,10 +619,25 @@ pub async fn codex_list_model_catalog_source_models(
             if id.is_empty() || !seen.insert(id.to_ascii_lowercase()) { return None; }
             let name = model.get("displayName").and_then(serde_json::Value::as_str)
                 .map(str::trim).filter(|value| !value.is_empty()).unwrap_or(id);
+            let context_window = model.get("contextWindow")
+                .or_else(|| model.get("context_window"))
+                .and_then(serde_json::Value::as_i64)
+                .filter(|value| *value > 0);
+            let auto_compact_token_limit = model.get("autoCompactTokenLimit")
+                .or_else(|| model.get("auto_compact_token_limit"))
+                .and_then(serde_json::Value::as_i64)
+                .filter(|value| *value > 0);
+            let reasoning_efforts = model.get("supportedReasoningEfforts")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| items.iter().filter_map(|item| {
+                    item.as_str().or_else(|| item.get("reasoningEffort").and_then(serde_json::Value::as_str))
+                        .map(str::to_string)
+                }).collect::<Vec<_>>())
+                .filter(|items| !items.is_empty());
             Some(CodexExperimentalModelDefinition {
                 model_id: id.to_string(), display_name: name.to_string(),
-                reasoning_efforts: None, context_window: None,
-                auto_compact_token_limit: None,
+                reasoning_efforts, context_window,
+                auto_compact_token_limit,
             })
         }).collect::<Vec<_>>();
         if models.is_empty() {

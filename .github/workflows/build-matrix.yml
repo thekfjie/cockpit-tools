@@ -179,6 +179,11 @@ jobs:
         with:
           key: ${{ matrix.platform }}-${{ matrix.label }}
 
+      - name: 🧪 Test Windows model management migration
+        if: matrix.label == 'windows-latest'
+        run: cargo test model_management_default_off_migration --lib
+        working-directory: src-tauri
+
       - name: 🐹 Go setup
         uses: actions/setup-go@v5
         with:

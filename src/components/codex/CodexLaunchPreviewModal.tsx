@@ -31,7 +31,9 @@ import { useEscClose } from "../../hooks/useEscClose";
 import {
   saveCodexInstanceQuickConfig,
   saveCodexInstanceConfiguration,
+  saveCodexInstanceModelCatalogSource,
 } from "../../services/codexInstanceService";
+import type { CodexModelCatalogSourceInfo } from "../../services/codexModelCatalogSourceService";
 import {
   CODEX_LAUNCH_PREVIEW_CONFIG_TIMEOUT,
   getCachedCodexLaunchPreviewConfig,
@@ -217,6 +219,7 @@ interface ModelConfigSnapshot {
   enabled: boolean;
   models: CodexExperimentalModelDefinition[];
   defaultModelId: string | null;
+  sourceInfo: CodexModelCatalogSourceInfo | null;
 }
 
 interface ContextConfigSnapshot {
@@ -248,6 +251,7 @@ export function CodexLaunchPreviewModal({
   );
   const [catalogEnabled, setCatalogEnabled] = useState(false);
   const [models, setModels] = useState<CodexExperimentalModelDefinition[]>([]);
+  const [modelSourceInfo, setModelSourceInfo] = useState<CodexModelCatalogSourceInfo | null>(null);
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const [contextOverrideEnabled, setContextOverrideEnabled] = useState(false);
   const [contextWindowInput, setContextWindowInput] = useState("");
@@ -433,6 +437,7 @@ export function CodexLaunchPreviewModal({
     setLoadedConfig(config);
     setCatalogEnabled(config.experimental_model_catalog_enabled);
     setModels(config.experimental_model_catalog_models);
+    setModelSourceInfo(config.experimental_model_catalog_source ?? null);
     setDefaultModelId(
       config.experimental_model_catalog_default_model_id ?? null,
     );
@@ -478,6 +483,7 @@ export function CodexLaunchPreviewModal({
         setLoadedConfig(null);
         setCatalogEnabled(false);
         setModels([]);
+        setModelSourceInfo(null);
         setDefaultModelId(null);
         setContextOverrideEnabled(false);
         setContextWindowInput("");
@@ -658,6 +664,8 @@ export function CodexLaunchPreviewModal({
         (loadedConfig.experimental_model_catalog_enabled !== catalogEnabled ||
           JSON.stringify(loadedConfig.experimental_model_catalog_models) !==
             JSON.stringify(models) ||
+          JSON.stringify(loadedConfig.experimental_model_catalog_source ?? null) !==
+            JSON.stringify(modelSourceInfo) ||
           (loadedConfig.experimental_model_catalog_default_model_id ?? null) !==
             defaultModelId))
     );
@@ -669,6 +677,7 @@ export function CodexLaunchPreviewModal({
     defaultModelId,
     loadedConfig,
     models,
+    modelSourceInfo,
     routingDirty,
   ]);
 
@@ -833,6 +842,10 @@ export function CodexLaunchPreviewModal({
           nextCatalog.defaultModelId,
         );
       }
+      if (modelSourceInfo) {
+        await saveCodexInstanceModelCatalogSource(instanceId, modelSourceInfo);
+        saved.experimental_model_catalog_source = modelSourceInfo;
+      }
       rememberCodexLaunchPreviewConfig(instanceId, saved);
       applyLoadedConfig(saved);
       setRoutingRoutes(normalizedRoutingRoutes);
@@ -879,6 +892,7 @@ export function CodexLaunchPreviewModal({
     loadedConfig,
     loadedInstanceKey,
     models,
+    modelSourceInfo,
     modelsError,
     instanceId,
     nextModelRouting,
@@ -1165,11 +1179,12 @@ export function CodexLaunchPreviewModal({
         setError(t('codex.modelProviders.keyNotFound', '当前 API Key 尚未加入模型供应商管理'));
         return;
       }
-      setModelConfigSnapshot({ enabled: catalogEnabled, models, defaultModelId });
+      setModelConfigSnapshot({ enabled: catalogEnabled, models, defaultModelId, sourceInfo: modelSourceInfo });
       setModelKeyProvider(provider);
       setModelKeyId(apiKey.id);
       setModelKeyCompactionMode(apiKey.compactionMode === 'remote' ? 'remote' : 'local');
       setModels(definitionsForProviderKey(provider, apiKey));
+      setModelSourceInfo(apiKey.modelSource ?? null);
       setDefaultModelId(apiKey.defaultModelId ?? resolveCodexModelProviderKeyModels(provider, apiKey).modelCatalog[0] ?? null);
       setNotice(null);
       setError(null);
@@ -1187,6 +1202,7 @@ export function CodexLaunchPreviewModal({
           : undefined,
       })),
       defaultModelId,
+      sourceInfo: modelSourceInfo,
     });
     setNotice(null);
     setError(null);
@@ -1197,6 +1213,7 @@ export function CodexLaunchPreviewModal({
     account,
     defaultModelId,
     models,
+    modelSourceInfo,
     routingEnabled,
     setError,
     t,
@@ -1261,7 +1278,8 @@ export function CodexLaunchPreviewModal({
             modelKeyProvider.id, modelKeyId,
             { modelCatalog: catalog, modelContextWindows: windows,
               modelAutoCompactTokenLimits: limits, modelDefinitions: models,
-              defaultModelId, compactionMode: modelKeyCompactionMode },
+              defaultModelId, compactionMode: modelKeyCompactionMode,
+              modelSource: modelSourceInfo ?? undefined },
           );
           const selectedKey = savedProvider.apiKeys.find((key) => key.id === modelKeyId);
           if (selectedKey) {
@@ -1287,15 +1305,11 @@ export function CodexLaunchPreviewModal({
           setSaving(false);
         }
       }
-      if (!apply && modelConfigSnapshot) {
+      if (modelConfigSnapshot) {
         setCatalogEnabled(modelConfigSnapshot.enabled);
         setModels(modelConfigSnapshot.models);
         setDefaultModelId(modelConfigSnapshot.defaultModelId);
-      }
-      if (!apply && modelKeyProvider && modelConfigSnapshot) {
-        setCatalogEnabled(modelConfigSnapshot.enabled);
-        setModels(modelConfigSnapshot.models);
-        setDefaultModelId(modelConfigSnapshot.defaultModelId);
+        setModelSourceInfo(modelConfigSnapshot.sourceInfo);
       }
       setModelKeyProvider(null);
       setModelKeyId(null);
@@ -1303,7 +1317,7 @@ export function CodexLaunchPreviewModal({
       setModelConfigOpen(false);
       setModelsError(null);
     },
-    [accounts, catalogEnabled, compactLimitInput, contextOverrideEnabled, contextWindowInput, defaultModelId, fetchAccounts, loadedConfig, modelConfigSnapshot, modelKeyCompactionMode, modelKeyId, modelKeyProvider, models, routingEnabled, setError, t],
+    [accounts, catalogEnabled, compactLimitInput, contextOverrideEnabled, contextWindowInput, defaultModelId, fetchAccounts, loadedConfig, modelConfigSnapshot, modelKeyCompactionMode, modelKeyId, modelKeyProvider, modelSourceInfo, models, routingEnabled, setError, t],
   );
 
   const openContextConfig = useCallback(() => {
@@ -2639,6 +2653,7 @@ export function CodexLaunchPreviewModal({
                         setModelKeyId(key.id);
                         setModelKeyCompactionMode(key.compactionMode === 'remote' ? 'remote' : 'local');
                         setModels(definitionsForProviderKey(modelKeyProvider, key));
+                        setModelSourceInfo(key.modelSource ?? null);
                         setDefaultModelId(key.defaultModelId ?? resolveCodexModelProviderKeyModels(modelKeyProvider, key).modelCatalog[0] ?? null);
                       })();
                     }} disabled={configBusy}>
@@ -2664,12 +2679,14 @@ export function CodexLaunchPreviewModal({
                 scrollKey={errorScrollKey}
               />
               <CodexModelCatalogSourceControls
+                sourceInfo={modelSourceInfo}
                 accountId={account?.id}
                 instanceId={instanceId}
                 hasExistingModels={models.length > 0}
                 disabled={configBusy || saving}
-                onReplace={(nextModels) => {
+                onReplace={(nextModels, sourceInfo) => {
                   setModels(nextModels);
+                  setModelSourceInfo(sourceInfo);
                   setDefaultModelId(nextModels[0]?.model_id ?? null);
                   setModelsError(null);
                   setNotice(null);
@@ -2703,6 +2720,7 @@ export function CodexLaunchPreviewModal({
                 resolveModelSource={modelKeyProvider ? undefined : resolveModelSource}
                 onChange={(nextModels) => {
                   setModels(nextModels);
+                  setModelSourceInfo((current) => current ? { ...current, manuallyAdjusted: true } : null);
                   setNotice(null);
                   setError(null);
                 }}

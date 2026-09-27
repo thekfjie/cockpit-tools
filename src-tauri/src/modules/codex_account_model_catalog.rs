@@ -272,6 +272,8 @@ struct ExperimentalModelCatalogConfig {
     version: u32,
     models: Vec<CodexExperimentalModelDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<CodexModelCatalogSourceInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     default_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     migrations: Vec<String>,
@@ -946,8 +948,11 @@ fn persist_experimental_model_definitions(
             .map(|model| model.model_id.clone())
     });
     let mut migrations = previous_config
-        .map(|config| config.migrations)
+        .as_ref()
+        .map(|config| config.migrations.clone())
         .unwrap_or_default();
+    let source = previous_config
+        .and_then(|config| config.source);
     let requested_astra = default_model_id
         .as_deref()
         .is_some_and(|model_id| model_id.eq_ignore_ascii_case(GPT_6_ASTRA_MODEL_ID));
@@ -981,6 +986,7 @@ fn persist_experimental_model_definitions(
     let mut content = serde_json::to_string_pretty(&ExperimentalModelCatalogConfig {
         version: EXPERIMENTAL_MODEL_CATALOG_CONFIG_VERSION,
         models: models.clone(),
+        source,
         default_model_id,
         migrations,
     })
@@ -989,6 +995,26 @@ fn persist_experimental_model_definitions(
     write_string_atomic(&experimental_model_config_path(base_dir), &content)
         .map_err(|_| "EXPERIMENTAL_MODEL_CATALOG_CONFIG_WRITE_FAILED".to_string())?;
     Ok(models)
+}
+
+pub fn save_model_catalog_source_for_base_dir(
+    base_dir: &Path,
+    source: CodexModelCatalogSourceInfo,
+) -> Result<(), String> {
+    if !matches!(source.source.as_str(), "codex" | "upstream" | "cockpit")
+        || source.fetched_at <= 0
+    {
+        return Err("无效的模型来源".to_string());
+    }
+    let path = experimental_model_config_path(base_dir);
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("读取模型配置失败: {}", error))?;
+    let mut config: ExperimentalModelCatalogConfig = serde_json::from_str(&content)
+        .map_err(|error| format!("解析模型配置失败: {}", error))?;
+    config.source = Some(source);
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|error| format!("序列化模型来源失败: {}", error))?;
+    write_string_atomic(&path, &(content + "\n"))
 }
 
 fn experimental_model_policy_enabled(base_dir: &Path) -> bool {
@@ -1518,6 +1544,9 @@ pub fn migrate_model_management_default_off_once(base_dir: &Path) -> Result<bool
         .is_some_and(|catalog| catalog_ref_targets_cockpit_managed_file(catalog, base_dir));
 
     if managed_catalog_configured {
+        let backup_path = base_dir.join("config.toml.cockpit-model-management-stale-reference.bak");
+        write_string_atomic(&backup_path, &existing)
+            .map_err(|error| format!("备份 config.toml 失败: {}", error))?;
         let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)
@@ -1666,6 +1695,8 @@ pub fn read_quick_config_from_config_toml(base_dir: &Path) -> Result<CodexQuickC
         experimental_model_catalog_unavailable_reason: experimental.unavailable_reason,
         experimental_model_catalog_conflict: experimental.conflict,
         experimental_model_catalog_models: experimental_models,
+        experimental_model_catalog_source: read_experimental_model_catalog_config(base_dir)
+            .and_then(|config| config.source),
         experimental_model_catalog_default_model_id: experimental_default_model_id,
         experimental_model_catalog_reset_models: experimental_reset_models,
         experimental_model_catalog_reset_default_model_id: experimental_reset_default_model_id,
