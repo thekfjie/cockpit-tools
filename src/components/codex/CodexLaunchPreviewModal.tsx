@@ -1324,10 +1324,12 @@ export function CodexLaunchPreviewModal({
         }
       }
       if (modelConfigSnapshot) {
-        setCatalogEnabled(modelConfigSnapshot.enabled);
-        setModels(modelConfigSnapshot.models);
-        setDefaultModelId(modelConfigSnapshot.defaultModelId);
-        setModelSourceInfo(modelConfigSnapshot.sourceInfo);
+        if (!apply) setCatalogEnabled(modelConfigSnapshot.enabled);
+        if (!apply || modelKeyProvider) {
+          setModels(modelConfigSnapshot.models);
+          setDefaultModelId(modelConfigSnapshot.defaultModelId);
+          setModelSourceInfo(modelConfigSnapshot.sourceInfo);
+        }
       }
       setModelKeyProvider(null);
       setModelKeyId(null);
@@ -1623,6 +1625,14 @@ export function CodexLaunchPreviewModal({
   const existingImageGenAccountIds = selectedImageGenAccounts.map(
     (item) => item.id,
   );
+  const selectedModelKey = modelKeyProvider?.apiKeys.find((key) => key.id === modelKeyId);
+  const modelSourceAccountId = modelKeyProvider
+    ? selectedModelKey && accounts.find((item) =>
+        item.openai_api_key === selectedModelKey.apiKey &&
+        normalizeCodexModelProviderBaseUrl(item.api_base_url ?? '') ===
+          normalizeCodexModelProviderBaseUrl(modelKeyProvider.baseUrl),
+      )?.id
+    : account?.id;
 
   return (
     <>
@@ -2699,7 +2709,8 @@ export function CodexLaunchPreviewModal({
               <CodexModelCatalogSourceControls
                 sourceInfo={modelSourceInfo}
                 scopeKey={modelKeyId ?? "instance"}
-                accountId={account?.id}
+                accountId={modelSourceAccountId}
+                requireAccountId={Boolean(modelKeyProvider)}
                 instanceId={instanceId}
                 hasExistingModels={models.length > 0}
                 disabled={configBusy || saving}
@@ -2770,12 +2781,13 @@ export function CodexLaunchPreviewModal({
               />
             </div>
             <div className="modal-footer">
-              {catalogEnabled && !modelKeyProvider && (
+              {catalogEnabled && (
                 <button
                   type="button"
                   className="btn btn-outline"
                   onClick={() => {
                     setCatalogEnabled(false);
+                    if (modelKeyProvider) return;
                     setModelConfigSnapshot(null);
                     setModelConfigOpen(false);
                     setModelsError(null);

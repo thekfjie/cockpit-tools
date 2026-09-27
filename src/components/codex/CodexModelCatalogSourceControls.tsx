@@ -11,6 +11,7 @@ import type { CodexExperimentalModelDefinition } from "../../types/codex";
 
 type Props = {
   accountId?: string | null;
+  requireAccountId?: boolean;
   instanceId?: string | null;
   scopeKey?: string | null;
   onReplace: (models: CodexExperimentalModelDefinition[], source: CodexModelCatalogSourceInfo) => void;
@@ -22,6 +23,7 @@ type Props = {
 
 export function CodexModelCatalogSourceControls({
   accountId,
+  requireAccountId = false,
   instanceId,
   scopeKey,
   onReplace,
@@ -45,6 +47,9 @@ export function CodexModelCatalogSourceControls({
     setBusy(nextSource);
     setError(null);
     try {
+      if (nextSource === "codex" && requireAccountId && !accountId) {
+        throw new Error(t("codex.api.oauthBinding.switchRequiresBinding", "请先绑定 OAuth 账号"));
+      }
       const models = nextSource === "upstream"
         ? await onFetchUpstream?.()
         : await listCodexModelCatalogSourceModels({
