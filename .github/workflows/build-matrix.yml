@@ -153,6 +153,28 @@ jobs:
         with:
           key: ${{ matrix.platform }}-${{ matrix.label }}
 
+      - name: 🐹 Go setup
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecars/cockpit-cliproxy/go.mod
+          cache-dependency-path: sidecars/cockpit-cliproxy/go.sum
+
+      - name: ⚙️ Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: 📦 Install frontend dependencies
+        run: npm install
+
+      - name: 🔄 Sync versions
+        run: npm run sync-version
+
+      - name: 🏗️ Build frontend for Windows Rust tests
+        if: matrix.label == 'windows-latest'
+        run: npm run build
+
       - name: 🧪 Test Windows model management migration
         if: matrix.label == 'windows-latest'
         run: cargo test model_management_default_off_migration --lib
@@ -172,24 +194,6 @@ jobs:
         if: matrix.label == 'windows-latest'
         run: cargo test auto_compact_limits --lib
         working-directory: src-tauri
-
-      - name: 🐹 Go setup
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: sidecars/cockpit-cliproxy/go.mod
-          cache-dependency-path: sidecars/cockpit-cliproxy/go.sum
-
-      - name: ⚙️ Node.js setup
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: "npm"
-
-      - name: 📦 Install frontend dependencies
-        run: npm install
-
-      - name: 🔄 Sync versions
-        run: npm run sync-version
 
       - name: 🧪 Test Codex context preservation
         if: matrix.label == 'ubuntu-22.04'

@@ -3041,6 +3041,7 @@ fn write_api_key_builtin_openai_to_config_toml(
 }
 
 fn api_key_account_requires_bearer_provider_override(
+    base_dir: &Path,
     account: &CodexAccount,
     provider_config: &ApiProviderConfig,
     oauth_bound: bool,
@@ -3171,7 +3172,7 @@ fn write_api_key_runtime_provider_to_config_toml(
     if is_deepseek_official_runtime_access(account) {
         return write_deepseek_official_responses_runtime_to_dir(base_dir, account);
     }
-    if !api_key_account_requires_bearer_provider_override(account, provider_config, oauth_bound) {
+    if !api_key_account_requires_bearer_provider_override(base_dir, account, provider_config, oauth_bound) {
         return write_api_key_builtin_openai_to_config_toml(
             base_dir,
             provider_config,
