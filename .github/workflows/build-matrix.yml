@@ -130,33 +130,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: "macos-aarch64"
-            platform: "macos-latest"
-            args: "--target aarch64-apple-darwin"
-            release_dir: "target/aarch64-apple-darwin/release"
-          - label: "macos-x86_64"
-            platform: "macos-latest"
-            args: "--target x86_64-apple-darwin"
-            release_dir: "target/x86_64-apple-darwin/release"
-          - label: "macos-universal"
-            platform: "macos-latest"
-            args: "--target universal-apple-darwin"
-            release_dir: "target/universal-apple-darwin/release"
-          - label: "ubuntu-22.04"
-            platform: "ubuntu-22.04"
-            args: ""
-            release_dir: "target/release"
-          - label: "ubuntu-24.04-arm"
-            platform: "ubuntu-24.04-arm"
-            args: ""
-            release_dir: "target/release"
-          - label: "windows-latest"
-            platform: "windows-latest"
-            args: ""
-            release_dir: "target/release"
-        exclude: ${{ fromJSON(inputs.windowsOnly && '[{"label":"macos-aarch64"},{"label":"macos-x86_64"},{"label":"macos-universal"},{"label":"ubuntu-22.04"},{"label":"ubuntu-24.04-arm"}]' || '[]') }}
+      matrix: ${{ fromJSON(inputs.windowsOnly && '{"include":[{"label":"windows-latest","platform":"windows-latest","args":"","release_dir":"target/release"}]}' || '{"include":[{"label":"macos-aarch64","platform":"macos-latest","args":"--target aarch64-apple-darwin","release_dir":"target/aarch64-apple-darwin/release"},{"label":"macos-x86_64","platform":"macos-latest","args":"--target x86_64-apple-darwin","release_dir":"target/x86_64-apple-darwin/release"},{"label":"macos-universal","platform":"macos-latest","args":"--target universal-apple-darwin","release_dir":"target/universal-apple-darwin/release"},{"label":"ubuntu-22.04","platform":"ubuntu-22.04","args":"","release_dir":"target/release"},{"label":"ubuntu-24.04-arm","platform":"ubuntu-24.04-arm","args":"","release_dir":"target/release"},{"label":"windows-latest","platform":"windows-latest","args":"","release_dir":"target/release"}]}') }}
 
     steps:
       - name: 📥 Checkout repository
@@ -182,6 +156,16 @@ jobs:
       - name: 🧪 Test Windows model management migration
         if: matrix.label == 'windows-latest'
         run: cargo test model_management_default_off_migration --lib
+        working-directory: src-tauri
+
+      - name: 🧪 Test Windows model context priority
+        if: matrix.label == 'windows-latest'
+        run: cargo test model_context --lib
+        working-directory: src-tauri
+
+      - name: 🧪 Test Windows source metadata
+        if: matrix.label == 'windows-latest'
+        run: cargo test source_metadata --lib
         working-directory: src-tauri
 
       - name: 🐹 Go setup

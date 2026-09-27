@@ -804,8 +804,9 @@ export function CodexLaunchPreviewModal({
       if (nextCatalog.enabled) {
         const conflict = validateEffectiveModelContexts(
           nextCatalog.models,
-          contextOverrideEnabled ? contextWindow : undefined,
-          contextOverrideEnabled ? compactLimit : undefined,
+          contextOverrideEnabled ? contextWindow : loadedConfig?.detected_model_context_window,
+          contextOverrideEnabled ? compactLimit : loadedConfig?.detected_auto_compact_token_limit,
+          modelSourceInfo?.modelMetadata,
         );
         if (conflict) {
           setError(conflict);
@@ -1262,6 +1263,7 @@ export function CodexLaunchPreviewModal({
           models,
           Number.isSafeInteger(effectiveWindow) ? effectiveWindow : undefined,
           Number.isSafeInteger(effectiveLimit) ? effectiveLimit : undefined,
+          modelSourceInfo?.modelMetadata,
         );
         if (conflict) {
           setError(conflict);
@@ -2708,6 +2710,9 @@ export function CodexLaunchPreviewModal({
               />
               <CodexExperimentalModelEditor
                 models={models}
+                sourceInfo={modelSourceInfo}
+                globalContextWindow={contextOverrideEnabled ? Number.parseInt(contextWindowInput, 10) : loadedConfig?.detected_model_context_window}
+                globalAutoCompactTokenLimit={contextOverrideEnabled && compactLimitInput.trim() ? Number.parseInt(compactLimitInput, 10) : loadedConfig?.detected_auto_compact_token_limit}
                 defaultModelId={defaultModelId}
                 resetModels={modelKeyProvider && modelKeyId
                   ? definitionsForProviderKey(modelKeyProvider, modelKeyProvider.apiKeys.find((key) => key.id === modelKeyId)!)

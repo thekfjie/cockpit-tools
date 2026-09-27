@@ -53,6 +53,15 @@ pub struct CodexExperimentalModelDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CodexModelSourceMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact_token_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodexModelCatalogSourceInfo {
     pub source: String,
     pub fetched_at: i64,
@@ -60,6 +69,8 @@ pub struct CodexModelCatalogSourceInfo {
     pub manually_adjusted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_info: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub model_metadata: HashMap<String, CodexModelSourceMetadata>,
 }
 
 /// Codex config.toml 快捷配置

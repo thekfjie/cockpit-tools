@@ -1354,6 +1354,7 @@ export function InstancesManager<TAccount extends AccountLike>({
         formExperimentalModels,
         formCodexQuickConfig?.detected_model_context_window,
         formCodexQuickConfig?.detected_auto_compact_token_limit,
+        formModelSourceInfo?.modelMetadata,
       );
       if (conflict) {
         setFormError(conflict);
@@ -3751,6 +3752,9 @@ export function InstancesManager<TAccount extends AccountLike>({
                       {(formExperimentalModelCatalogEnabled || formModelRoutingEnabled) && (
                         <CodexExperimentalModelEditor
                           models={formExperimentalModels}
+                          sourceInfo={formModelSourceInfo}
+                          globalContextWindow={formCodexQuickConfig?.detected_model_context_window}
+                          globalAutoCompactTokenLimit={formCodexQuickConfig?.detected_auto_compact_token_limit}
                           defaultModelId={formExperimentalDefaultModelId}
                           mode="summary"
                           availableChannels={formAvailableChannels}
