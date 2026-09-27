@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::process::Command;
@@ -521,6 +522,105 @@ fn resolve_instance_base_dir(instance_id: &str) -> Result<PathBuf, String> {
         .find(|item| item.id == instance_id)
         .ok_or("实例不存在")?;
     Ok(PathBuf::from(instance.user_data_dir))
+}
+
+#[tauri::command]
+pub async fn codex_list_model_catalog_source_models(
+    source: String,
+    account_id: Option<String>,
+    instance_id: Option<String>,
+) -> Result<Vec<CodexExperimentalModelDefinition>, String> {
+    if source == "cockpit" {
+        return Ok(modules::codex_account::cockpit_preset_model_definitions());
+    }
+    if source != "codex" {
+        return Err("未知模型来源".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let expected_oauth_id = if let Some(account_id) = account_id.as_deref() {
+            let account = modules::codex_account::load_account(account_id)
+                .ok_or("API Key 账号不存在")?;
+            let oauth_id = if account.is_api_key_auth() {
+                account.bound_oauth_account_id.as_deref().map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("请先为此 API Key 绑定 OAuth 账号")?
+                    .to_string()
+            } else {
+                account.id.clone()
+            };
+            let oauth = modules::codex_account::load_account(&oauth_id)
+                .ok_or("绑定的 OAuth 账号不存在，请重新绑定")?;
+            if oauth.is_api_key_auth() || oauth.is_agent_identity_auth()
+                || oauth.is_web_session_auth() || oauth.requires_reauth {
+                return Err("绑定的 OAuth 账号需要重新授权".to_string());
+            }
+            Some(oauth_id)
+        } else {
+            None
+        };
+
+        let profile = if let Some(instance_id) = instance_id.as_deref() {
+            resolve_instance_base_dir(instance_id)?
+        } else if let Some(account_id) = account_id.as_deref() {
+            let default = modules::codex_instance::get_default_codex_home()?;
+            let current_id = modules::codex_account::load_account_index().current_account_id;
+            if current_id.as_deref() == Some(account_id) {
+                default
+            } else {
+                let store = modules::codex_instance::load_instance_store()?;
+                store.instances.into_iter()
+                    .find(|item| item.bind_account_id.as_deref() == Some(account_id))
+                    .map(|item| PathBuf::from(item.user_data_dir))
+                    .ok_or("请先用此 API Key 启动 Codex，再从 Codex 端刷新模型")?
+            }
+        } else {
+            modules::codex_instance::get_default_codex_home()?
+        };
+        let runtime_oauth_id = modules::codex_account::oauth_account_id_for_runtime_dir(&profile);
+        if runtime_oauth_id.is_none() || expected_oauth_id.as_ref().is_some_and(|id| runtime_oauth_id.as_ref() != Some(id)) {
+            return Err("当前 Codex 实例尚未使用绑定的 OAuth 账号，请先启动该账号".to_string());
+        }
+        let isolated_profile = std::env::temp_dir().join(format!(
+            "cockpit-codex-model-list-{}",
+            uuid::Uuid::new_v4()
+        ));
+        modules::instance_store::copy_dir_recursive(&profile, &isolated_profile)?;
+        let isolated_result = (|| {
+            let config_path = isolated_profile.join("config.toml");
+            if config_path.is_file() {
+                let content = fs::read_to_string(&config_path).unwrap_or_default();
+                if !content.trim().is_empty() {
+                    let mut doc = modules::codex_config_format::read_codex_config_doc_from_str(&content)?;
+                    let _ = doc.remove("model_catalog_json");
+                    let _ = doc.remove("model_context_window");
+                    let _ = doc.remove("model_auto_compact_token_limit");
+                    let content = modules::codex_config_format::codex_config_doc_to_string(&mut doc);
+                    modules::codex_config_format::write_codex_config_toml_atomic(&config_path, &content)?;
+                }
+            }
+            let _ = fs::remove_file(isolated_profile.join("models_cache.json"));
+            modules::codex_official_app_server::list_models(&isolated_profile)
+        })();
+        let _ = fs::remove_dir_all(&isolated_profile);
+        let raw_models = isolated_result?;
+        let mut seen = HashSet::new();
+        let models = raw_models.into_iter().filter_map(|model| {
+            let id = model.get("model").or_else(|| model.get("id"))?
+                .as_str()?.trim();
+            if id.is_empty() || !seen.insert(id.to_ascii_lowercase()) { return None; }
+            let name = model.get("displayName").and_then(serde_json::Value::as_str)
+                .map(str::trim).filter(|value| !value.is_empty()).unwrap_or(id);
+            Some(CodexExperimentalModelDefinition {
+                model_id: id.to_string(), display_name: name.to_string(),
+                reasoning_efforts: None, context_window: None,
+                auto_compact_token_limit: None,
+            })
+        }).collect::<Vec<_>>();
+        if models.is_empty() {
+            return Err("Codex model/list 未返回可见模型，已保留当前列表".to_string());
+        }
+        Ok(models)
+    }).await.map_err(|error| format!("刷新 Codex 模型后台任务失败: {}", error))?
 }
 
 fn should_apply_instance_binding_immediately(

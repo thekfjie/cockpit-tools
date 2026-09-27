@@ -658,6 +658,10 @@ fn default_experimental_model_definitions(
     }
 }
 
+pub fn cockpit_preset_model_definitions() -> Vec<CodexExperimentalModelDefinition> {
+    default_experimental_model_definitions(&get_codex_home())
+}
+
 /// Add newly shipped models to an unchanged, previously generated default list.
 /// Explicitly curated lists (including lists where the user removed a shipped model)
 /// remain untouched so account switching does not override user visibility choices.
@@ -2191,7 +2195,16 @@ fn cleanup_experimental_model_catalog_for_dir(base_dir: &Path) -> Result<(), Str
     Ok(())
 }
 
-fn account_syncs_model_catalog_to_codex(account: &CodexAccount) -> bool {
+fn account_model_management_enabled(base_dir: &Path) -> bool {
+    read_quick_config_from_config_toml(base_dir)
+        .map(|config| config.experimental_model_catalog_enabled)
+        .unwrap_or(false)
+}
+
+fn account_syncs_model_catalog_to_codex(base_dir: &Path, account: &CodexAccount) -> bool {
+    if !account_model_management_enabled(base_dir) {
+        return false;
+    }
     account.is_api_key_auth()
         && account.api_sync_model_catalog_to_codex
         && account.api_provider_mode == CodexApiProviderMode::Custom
@@ -2208,7 +2221,7 @@ fn sync_api_key_model_catalog_to_dir(
     base_dir: &Path,
     account: &CodexAccount,
 ) -> Result<bool, String> {
-    if !account_syncs_model_catalog_to_codex(account) {
+    if !account_syncs_model_catalog_to_codex(base_dir, account) {
         return Ok(false);
     }
     // 官方 DeepSeek 使用官方 DeepSeek 目录/工具声明，避免客户端发出上游不认的
@@ -2269,6 +2282,7 @@ fn sync_api_key_model_catalog_to_dir(
         account,
         crate::modules::codex_local_access::read_toml_model_context_window(&doc),
     )?;
+    validate_catalog_against_global_compaction_limit(&content, &doc)?;
     let content = decorate_managed_model_catalog_for_profile(base_dir, &content)?;
     let catalog_path = base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE);
     write_string_atomic(&catalog_path, &content).map_err(|e| {
@@ -2304,6 +2318,49 @@ fn sync_api_key_model_catalog_to_dir(
         ));
     }
     Ok(true)
+}
+
+fn validate_catalog_against_global_compaction_limit(
+    catalog_json: &str,
+    doc: &Document,
+) -> Result<(), String> {
+    let Some(limit) = doc
+        .get("model_auto_compact_token_limit")
+        .and_then(|item| item.as_integer())
+        .filter(|value| *value > 0)
+    else {
+        return Ok(());
+    };
+    let catalog: serde_json::Value = serde_json::from_str(catalog_json)
+        .map_err(|error| format!("解析 Codex 模型目录失败: {}", error))?;
+    let Some(models) = catalog.get("models").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    for model in models {
+        let slug = model.get("slug").and_then(serde_json::Value::as_str).unwrap_or("");
+        if slug.eq_ignore_ascii_case("codex-auto-review") {
+            continue;
+        }
+        let Some(window) = model
+            .get("context_window")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0)
+        else {
+            continue;
+        };
+        let effective_limit = model
+            .get("auto_compact_token_limit")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0)
+            .unwrap_or(limit);
+        if effective_limit >= window {
+            return Err(format!(
+                "模型 {} 的自动压缩阈值 {} 必须小于上下文窗口 {}",
+                slug, effective_limit, window
+            ));
+        }
+    }
+    Ok(())
 }
 
 const API_KEY_COMPACTION_BACKUP_FILE: &str = "cockpit-api-key-compaction.json";
@@ -2405,7 +2462,7 @@ fn sync_or_cleanup_account_model_catalog_for_dir(
         return Ok(());
     }
     let _ = cleanup_deepseek_official_model_catalog_for_dir(base_dir)?;
-    if account_syncs_model_catalog_to_codex(account) {
+    if account_syncs_model_catalog_to_codex(base_dir, account) {
         // 第三方 CDP 注入：模型清单由注入脚本写入官方客户端，不再写壳位目录，
         // 否则客户端会同时看到注入列表与壳位列表。
         if crate::modules::codex_account::account_uses_cdp_model_injection(account) {
@@ -2883,7 +2940,7 @@ fn api_key_account_requires_bearer_provider_override(
         && is_loopback_http_base_url(Some(base_url));
     let requires_immediate_provider_override =
         crate::modules::codex_local_access::account_requires_provider_gateway(account)
-            && !account_syncs_model_catalog_to_codex(account);
+            && !account_syncs_model_catalog_to_codex(base_dir, account);
     let wire_api = account
         .api_wire_api
         .as_deref()

@@ -868,7 +868,6 @@ fn apply_model_provider_key_settings(account: &mut CodexAccount) {
                 .filter_map(serde_json::Value::as_str)
                 .map(str::to_string)
                 .collect());
-            account.api_sync_model_catalog_to_codex = !account.api_model_catalog.is_empty();
             let windows = key_config.get("modelContextWindows")
                 .and_then(serde_json::Value::as_object)
                 .map(|values| values.iter()
