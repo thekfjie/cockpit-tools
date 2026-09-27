@@ -867,21 +867,6 @@ fn lookup_explicit_catalog_context_window(
     None
 }
 
-fn is_official_deepseek_catalog_model(model: &str) -> bool {
-    DEEPSEEK_OFFICIAL_SHELL_SLOTS
-        .iter()
-        .any(|(upstream, _)| upstream.eq_ignore_ascii_case(model.trim()))
-}
-
-fn should_keep_official_catalog_window(slot: &ProviderGatewayModelSlot) -> bool {
-    if is_official_deepseek_catalog_model(&slot.upstream_model)
-        || is_official_deepseek_catalog_model(&slot.client_model)
-    {
-        return true;
-    }
-    false
-}
-
 pub(crate) fn decorate_catalog_context_windows(
     catalog_json: &str,
     slots: &[ProviderGatewayModelSlot],
@@ -893,9 +878,7 @@ pub(crate) fn decorate_catalog_context_windows(
     let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
         return Ok(catalog_json.to_string());
     };
-    let fallback = default_window
-        .filter(|value| *value > 0)
-        .unwrap_or(FALLBACK_CATALOG_CONTEXT_WINDOW);
+    let global_window = default_window.filter(|value| *value > 0);
     for model in models.iter_mut() {
         let slug = model
             .get("slug")
@@ -910,13 +893,10 @@ pub(crate) fn decorate_catalog_context_windows(
             .iter()
             .find(|slot| slot.client_model.eq_ignore_ascii_case(&slug));
         let window = if let Some(slot) = slot {
-            lookup_explicit_catalog_context_window(slot, explicit).or_else(|| {
-                if should_keep_official_catalog_window(slot) {
-                    None
-                } else {
-                    Some(fallback)
-                }
-            })
+            lookup_explicit_catalog_context_window(slot, explicit)
+                .or(global_window)
+                .or_else(|| model.get("context_window").and_then(Value::as_i64).filter(|value| *value > 0))
+                .or(Some(FALLBACK_CATALOG_CONTEXT_WINDOW))
         } else {
             explicit
                 .get(&slug)
@@ -982,10 +962,14 @@ fn apply_auto_compact_limits_to_catalog(
                 .or_else(|| limits.iter().find_map(|(name, value)|
                     name.eq_ignore_ascii_case(slug).then(|| value.as_i64()).flatten()));
             let window = model.get("context_window").and_then(Value::as_i64);
-            if let (Some(limit), Some(window), Some(object)) =
-                (limit, window, model.as_object_mut())
-            {
-                if limit > 0 && limit < window {
+            if let (Some(limit), Some(window)) = (limit, window) {
+                if limit <= 0 || limit >= window {
+                    return Err(format!(
+                        "模型 {} 的自动压缩阈值 {} 必须小于上下文窗口 {}",
+                        slug, limit, window
+                    ));
+                }
+                if let Some(object) = model.as_object_mut() {
                     object.insert("auto_compact_token_limit".to_string(), json!(limit));
                 }
             }
@@ -1468,10 +1452,12 @@ fn select_model_provider_key_config(providers: &Value, account: &CodexAccount) -
 }
 
 pub(crate) fn model_provider_key_compaction_mode(account: &CodexAccount) -> Option<String> {
-    model_provider_key_config_for_account(account)?
-        .get("compactionMode")?.as_str()
-        .filter(|mode| matches!(*mode, "remote" | "local"))
-        .map(str::to_string)
+    let key = model_provider_key_config_for_account(account)?;
+    Some(if key.get("compactionMode").and_then(Value::as_str) == Some("remote") {
+        "remote"
+    } else {
+        "local"
+    }.to_string())
 }
 
 fn normalize_provider_vision_base_url(value: &str) -> Option<String> {

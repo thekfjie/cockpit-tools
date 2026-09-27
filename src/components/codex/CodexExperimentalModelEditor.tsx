@@ -79,8 +79,8 @@ interface CustomContextDraft {
 
 interface CustomContextDialogProps {
   draft: CustomContextDraft;
-  contextWindow: number;
-  autoCompactTokenLimit: number;
+  contextWindow?: number;
+  autoCompactTokenLimit?: number;
   error: string | null;
   onContextWindowChange: (value: string) => void;
   onAutoCompactTokenLimitChange: (value: string) => void;
@@ -143,13 +143,15 @@ function CustomContextDialog({
               value={draft.contextWindow}
               onChange={(event) => onContextWindowChange(event.target.value)}
               className={
-                !Number.isInteger(contextWindow) || contextWindow <= 0
+                contextWindow !== undefined &&
+                (!Number.isInteger(contextWindow) || contextWindow <= 0)
                   ? "has-error"
                   : ""
               }
               autoFocus
             />
-            {(!Number.isInteger(contextWindow) || contextWindow <= 0) && (
+            {contextWindow !== undefined &&
+              (!Number.isInteger(contextWindow) || contextWindow <= 0) && (
               <small className="codex-experimental-model-editor__error">
                 {t(
                   "codex.experimentalModelCatalog.models.validation.contextWindow",
@@ -174,15 +176,17 @@ function CustomContextDialog({
                 onAutoCompactTokenLimitChange(event.target.value)
               }
               className={
-                !Number.isInteger(autoCompactTokenLimit) ||
-                autoCompactTokenLimit <= 0 ||
-                autoCompactTokenLimit >= contextWindow
+                autoCompactTokenLimit !== undefined &&
+                (!Number.isInteger(autoCompactTokenLimit) ||
+                  autoCompactTokenLimit <= 0 ||
+                  (contextWindow !== undefined && autoCompactTokenLimit >= contextWindow))
                   ? "has-error"
                   : ""
               }
             />
-            {(!Number.isInteger(autoCompactTokenLimit) ||
-              autoCompactTokenLimit <= 0) && (
+            {autoCompactTokenLimit !== undefined &&
+              (!Number.isInteger(autoCompactTokenLimit) ||
+                autoCompactTokenLimit <= 0) && (
               <small className="codex-experimental-model-editor__error">
                 {t(
                   "codex.experimentalModelCatalog.models.validation.autoCompact",
@@ -190,7 +194,9 @@ function CustomContextDialog({
                 )}
               </small>
             )}
-            {Number.isInteger(autoCompactTokenLimit) &&
+            {contextWindow !== undefined &&
+              autoCompactTokenLimit !== undefined &&
+              Number.isInteger(autoCompactTokenLimit) &&
               autoCompactTokenLimit > 0 &&
               autoCompactTokenLimit >= contextWindow && (
                 <small className="codex-experimental-model-editor__error">
@@ -644,30 +650,21 @@ export function CodexExperimentalModelEditor({
     setOpenContextIndex(null);
     setCustomContextDraft({
       index,
-      contextWindow: String(
-        model.context_window ?? CONTEXT_PRESETS.preset_1m.context_window,
-      ),
-      autoCompactTokenLimit: String(
-        model.auto_compact_token_limit ??
-          CONTEXT_PRESETS.preset_1m.auto_compact_token_limit,
-      ),
+      contextWindow: String(model.context_window ?? ""),
+      autoCompactTokenLimit: String(model.auto_compact_token_limit ?? ""),
     });
   };
 
-  const customContextWindow = customContextDraft
+  const customContextWindow = customContextDraft?.contextWindow.trim()
     ? Number(customContextDraft.contextWindow.trim())
-    : Number.NaN;
-  const customAutoCompactTokenLimit = customContextDraft
+    : undefined;
+  const customAutoCompactTokenLimit = customContextDraft?.autoCompactTokenLimit.trim()
     ? Number(customContextDraft.autoCompactTokenLimit.trim())
-    : Number.NaN;
+    : undefined;
   const customContextError = customContextDraft
     ? validateModelContext({
-        context_window: Number.isInteger(customContextWindow)
-          ? customContextWindow
-          : Number.NaN,
-        auto_compact_token_limit: Number.isInteger(customAutoCompactTokenLimit)
-          ? customAutoCompactTokenLimit
-          : Number.NaN,
+        context_window: customContextWindow,
+        auto_compact_token_limit: customAutoCompactTokenLimit,
       })
     : null;
   const customContextErrorText = customContextError

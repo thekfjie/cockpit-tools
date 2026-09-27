@@ -717,7 +717,7 @@ export async function updateCodexModelProviderApiKeyModels(
   const limits = normalizeModelContextWindows(input.modelAutoCompactTokenLimits, catalog);
   for (const [model, limit] of Object.entries(limits ?? {})) {
     const window = windows?.[model];
-    if (!window || limit >= window) throw new Error('MODEL_COMPACT_LIMIT_INVALID');
+    if (window !== undefined && limit >= window) throw new Error('MODEL_COMPACT_LIMIT_INVALID');
   }
   apiKey.modelCatalog = catalog;
   apiKey.modelContextWindows = windows;

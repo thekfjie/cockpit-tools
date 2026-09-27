@@ -111,6 +111,7 @@ import {
 import { CodexExperimentalModelEditor } from "./CodexExperimentalModelEditor";
 import { CodexModelCatalogSourceControls } from "./CodexModelCatalogSourceControls";
 import { getCodexExperimentalModelErrorMessage } from "../../utils/codexExperimentalModel";
+import { validateEffectiveModelContexts } from "../../utils/codexModelContext";
 import { listModelProviderModels } from "../../services/modelProviderUsageService";
 import { CodexSessionVisibilityRepairModal } from "./CodexSessionVisibilityRepairModal";
 import "./CodexLaunchPreviewModal.css";
@@ -791,6 +792,17 @@ export function CodexLaunchPreviewModal({
         );
       }
       const nextCatalog = resolveRoutingCatalog(nextModels, catalogEnabled, defaultModelId);
+      if (nextCatalog.enabled) {
+        const conflict = validateEffectiveModelContexts(
+          nextCatalog.models,
+          contextOverrideEnabled ? contextWindow : undefined,
+          contextOverrideEnabled ? compactLimit : undefined,
+        );
+        if (conflict) {
+          setError(conflict);
+          return false;
+        }
+      }
       let saved: CodexQuickConfig;
       if (routingDirty) {
         const result = await saveCodexInstanceConfiguration({
@@ -1142,19 +1154,6 @@ export function CodexLaunchPreviewModal({
   const openModelConfig = useCallback(async () => {
     if (configBusy || (unavailable && !(account && isCodexApiKeyAccount(account)))) return;
     if (account && isCodexApiKeyAccount(account)) {
-      if (!catalogEnabled) {
-        const confirmed = await confirmDialog(
-          t("codex.modelManagement.enableConfirmDescription"),
-          {
-            title: t("codex.modelManagement.enableConfirmTitle", "开启模型管理？"),
-            okLabel: t("codex.modelManagement.enableConfirmAction", "开启并配置"),
-            cancelLabel: t("common.cancel", "取消"),
-            kind: "warning",
-          },
-        );
-        if (!confirmed) return;
-        setCatalogEnabled(true);
-      }
       const providers = await listCodexModelProviders();
       const accountBaseUrl = normalizeCodexModelProviderBaseUrl(account.api_base_url ?? '');
       const provider = providers.find((item) =>
@@ -1179,18 +1178,6 @@ export function CodexLaunchPreviewModal({
     }
     // 混合模型路由需要实例自己的可见模型清单，但不应替用户开启「模型管理」：
     // 这种情况下只打开编辑器维护路由模型，开关状态保持不变。
-    if (!catalogEnabled && !routingEnabled) {
-      const confirmed = await confirmDialog(
-        t("codex.modelManagement.enableConfirmDescription"),
-        {
-          title: t("codex.modelManagement.enableConfirmTitle", "开启模型管理？"),
-          okLabel: t("codex.modelManagement.enableConfirmAction", "开启并配置"),
-          cancelLabel: t("common.cancel", "取消"),
-          kind: "warning",
-        },
-      );
-      if (!confirmed) return;
-    }
     setModelConfigSnapshot({
       enabled: catalogEnabled,
       models: models.map((model) => ({
@@ -1201,9 +1188,6 @@ export function CodexLaunchPreviewModal({
       })),
       defaultModelId,
     });
-    if (!routingEnabled) {
-      setCatalogEnabled(true);
-    }
     setNotice(null);
     setError(null);
     setModelConfigOpen(true);
@@ -1251,6 +1235,21 @@ export function CodexLaunchPreviewModal({
   const closeModelConfig = useCallback(
     async (apply: boolean) => {
       if (apply && modelKeyProvider && modelKeyId) {
+        const effectiveWindow = contextOverrideEnabled
+          ? Number.parseInt(contextWindowInput, 10)
+          : loadedConfig?.detected_model_context_window;
+        const effectiveLimit = contextOverrideEnabled && compactLimitInput.trim()
+          ? Number.parseInt(compactLimitInput, 10)
+          : loadedConfig?.detected_auto_compact_token_limit;
+        const conflict = validateEffectiveModelContexts(
+          models,
+          Number.isSafeInteger(effectiveWindow) ? effectiveWindow : undefined,
+          Number.isSafeInteger(effectiveLimit) ? effectiveLimit : undefined,
+        );
+        if (conflict) {
+          setError(conflict);
+          return;
+        }
         const catalog = models.map((model) => model.model_id);
         const windows = Object.fromEntries(models.filter((model) => model.context_window)
           .map((model) => [model.model_id, model.context_window!]));
@@ -1274,7 +1273,7 @@ export function CodexLaunchPreviewModal({
               await syncCodexApiKeyProviderAccounts({
                 accountIds: [linked.id],
                 ...buildCodexModelProviderAccountSnapshot(savedProvider, selectedKey.name, selectedKey.apiKey),
-                apiSyncModelCatalogToCodex: catalogEnabled,
+                apiSyncModelCatalogToCodex: true,
               });
             }
           }
@@ -1288,17 +1287,12 @@ export function CodexLaunchPreviewModal({
           setSaving(false);
         }
       }
-      if (apply) {
-        // 混合模型路由下这里只应用路由模型改动，不替用户打开「模型管理」。
-        if (!routingEnabled && !modelKeyProvider) {
-          setCatalogEnabled(true);
-        }
-      } else if (modelConfigSnapshot) {
+      if (!apply && modelConfigSnapshot) {
         setCatalogEnabled(modelConfigSnapshot.enabled);
         setModels(modelConfigSnapshot.models);
         setDefaultModelId(modelConfigSnapshot.defaultModelId);
       }
-      if (modelKeyProvider && modelConfigSnapshot) {
+      if (!apply && modelKeyProvider && modelConfigSnapshot) {
         setCatalogEnabled(modelConfigSnapshot.enabled);
         setModels(modelConfigSnapshot.models);
         setDefaultModelId(modelConfigSnapshot.defaultModelId);
@@ -1309,7 +1303,7 @@ export function CodexLaunchPreviewModal({
       setModelConfigOpen(false);
       setModelsError(null);
     },
-    [accounts, catalogEnabled, defaultModelId, fetchAccounts, modelConfigSnapshot, modelKeyCompactionMode, modelKeyId, modelKeyProvider, models, routingEnabled, setError, t],
+    [accounts, catalogEnabled, compactLimitInput, contextOverrideEnabled, contextWindowInput, defaultModelId, fetchAccounts, loadedConfig, modelConfigSnapshot, modelKeyCompactionMode, modelKeyId, modelKeyProvider, models, routingEnabled, setError, t],
   );
 
   const openContextConfig = useCallback(() => {
@@ -2749,6 +2743,28 @@ export function CodexLaunchPreviewModal({
                   disabled={configBusy}
                 >
                   {t("codex.modelManagement.disable", "关闭模型管理")}
+                </button>
+              )}
+              {!catalogEnabled && (
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  disabled={configBusy}
+                  onClick={() => {
+                    void confirmDialog(
+                      t("codex.modelManagement.enableConfirmDescription"),
+                      {
+                        title: t("codex.modelManagement.enableConfirmTitle", "开启模型管理？"),
+                        okLabel: t("codex.modelManagement.enableConfirmAction", "开启并配置"),
+                        cancelLabel: t("common.cancel", "取消"),
+                        kind: "warning",
+                      },
+                    ).then((confirmed) => {
+                      if (confirmed) setCatalogEnabled(true);
+                    });
+                  }}
+                >
+                  {t("codex.modelManagement.enable", "开启模型管理")}
                 </button>
               )}
               <button

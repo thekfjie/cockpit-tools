@@ -40,8 +40,7 @@ function resolveAccountCompactionMode(
       : "local";
   }
   return account.api_wire_api !== "chat_completions" &&
-    (key.compactionMode === "remote" ||
-      (key.compactionMode !== "local" && account.api_provider_name?.trim() === "OpenAI"))
+    key.compactionMode === "remote"
     ? "remote"
     : "local";
 }
