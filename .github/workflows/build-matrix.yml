@@ -2,6 +2,11 @@ name: 🚀 Build Matrix
 
 on:
   workflow_dispatch:
+    inputs:
+      windowsOnly:
+        description: "Build only the Windows package"
+        type: boolean
+        default: false
   pull_request:
     branches:
       - "main"
@@ -151,6 +156,7 @@ jobs:
             platform: "windows-latest"
             args: ""
             release_dir: "target/release"
+        exclude: ${{ fromJSON(inputs.windowsOnly && '[{"label":"macos-aarch64"},{"label":"macos-x86_64"},{"label":"macos-universal"},{"label":"ubuntu-22.04"},{"label":"ubuntu-24.04-arm"}]' || '[]') }}
 
     steps:
       - name: 📥 Checkout repository
