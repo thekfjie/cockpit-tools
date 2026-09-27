@@ -128,13 +128,15 @@ export function CodexModelCatalogSourceControls({
           </button>
         ))}
       </div>
-      <small className="codex-model-catalog-source-controls__status">
-        {t("codex.modelManagement.sourceStatus", "当前来源：{{source}}", { source: sourceLabel })}
-        {sourceInfo?.manuallyAdjusted ? " · 基于此来源手动调整" : ""}
-        {sourceInfo?.fetchedAt ? ` · ${new Date(sourceInfo.fetchedAt).toLocaleString()}` : ""}
-        {sourceInfo?.cacheInfo ? ` · ${sourceInfo.cacheInfo}` : ""}
-      </small>
-      {error && <span className="form-error">{error}</span>}
+      <div className="codex-model-catalog-source-controls__feedback">
+        <span className="codex-model-catalog-source-controls__status">
+          {t("codex.modelManagement.sourceStatus", "当前来源：{{source}}", { source: sourceLabel })}
+          {sourceInfo?.manuallyAdjusted ? " · 基于此来源手动调整" : ""}
+          {sourceInfo?.fetchedAt ? ` · ${new Date(sourceInfo.fetchedAt).toLocaleString()}` : ""}
+          {sourceInfo?.cacheInfo ? ` · ${sourceInfo.cacheInfo}` : ""}
+        </span>
+        {error && <span className="codex-model-catalog-source-controls__error" role="alert">{error}</span>}
+      </div>
     </div>
   );
 }
