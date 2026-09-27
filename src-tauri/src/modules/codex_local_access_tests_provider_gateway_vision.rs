@@ -54,15 +54,26 @@ fn auto_compact_limits_apply_only_to_the_selected_catalog() {
     let local_limits = serde_json::json!({"model-x": 220000});
     let remote_limits = serde_json::json!({"model-x": 90000});
     let local = super::apply_auto_compact_limits_to_catalog(
-        catalog, &[], local_limits.as_object().unwrap(),
+        catalog, &[], local_limits.as_object().unwrap(), Some(230000),
     ).unwrap();
     let remote = super::apply_auto_compact_limits_to_catalog(
-        catalog, &[], remote_limits.as_object().unwrap(),
+        catalog, &[], remote_limits.as_object().unwrap(), Some(230000),
     ).unwrap();
     let local: serde_json::Value = serde_json::from_str(&local).unwrap();
     let remote: serde_json::Value = serde_json::from_str(&remote).unwrap();
     assert_eq!(local["models"][0]["auto_compact_token_limit"], 220000);
     assert_eq!(remote["models"][0]["auto_compact_token_limit"], 90000);
+}
+
+#[test]
+fn global_auto_compact_limit_precedes_source_metadata_without_a_key_override() {
+    let catalog = r#"{"models":[{"slug":"model-x","context_window":2760000,"auto_compact_token_limit":900000}]}"#;
+    let empty_limits = serde_json::json!({});
+    let content = super::apply_auto_compact_limits_to_catalog(
+        catalog, &[], empty_limits.as_object().unwrap(), Some(2_750_000),
+    ).expect("apply global threshold");
+    let content: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(content["models"][0]["auto_compact_token_limit"], 2_750_000);
 }
 
 #[test]

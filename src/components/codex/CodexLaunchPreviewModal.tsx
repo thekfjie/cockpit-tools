@@ -2682,6 +2682,7 @@ export function CodexLaunchPreviewModal({
               />
               <CodexModelCatalogSourceControls
                 sourceInfo={modelSourceInfo}
+                scopeKey={modelKeyId ?? "instance"}
                 accountId={account?.id}
                 instanceId={instanceId}
                 hasExistingModels={models.length > 0}
