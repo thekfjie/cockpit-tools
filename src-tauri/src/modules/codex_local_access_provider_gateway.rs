@@ -906,6 +906,8 @@ pub(crate) fn decorate_catalog_context_windows(
                     })
                 })
                 .filter(|value| *value > 0)
+                .or(global_window)
+                .or_else(|| model.get("context_window").and_then(Value::as_i64).filter(|value| *value > 0))
         };
         let Some(window) = window else {
             continue;
@@ -930,29 +932,49 @@ pub(crate) fn decorate_account_catalog_context_windows(
     slots: &[ProviderGatewayModelSlot],
     account: &CodexAccount,
     default_window: Option<i64>,
+    default_limit: Option<i64>,
 ) -> Result<String, String> {
+    let key_config = model_provider_key_config_for_account(account);
+    let mut source_catalog: Value = serde_json::from_str(catalog_json)
+        .map_err(|error| format!("解析账号模型目录失败: {}", error))?;
+    if let (Some(models), Some(metadata)) = (
+        source_catalog.get_mut("models").and_then(Value::as_array_mut),
+        key_config.as_ref().and_then(|key| key.pointer("/modelSource/modelMetadata")).and_then(Value::as_object),
+    ) {
+        for model in models {
+            let slug = model.get("slug").and_then(Value::as_str).unwrap_or_default();
+            let slot = slots.iter().find(|slot| slot.client_model.eq_ignore_ascii_case(slug));
+            let source = [slot.map(|slot| slot.upstream_model.as_str()), Some(slug)]
+                .into_iter().flatten().find_map(|id| metadata.iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(id)).map(|(_, value)| value));
+            if let (Some(source), Some(object)) = (source, model.as_object_mut()) {
+                for (field, source_field) in [("context_window", "contextWindow"),
+                    ("auto_compact_token_limit", "autoCompactTokenLimit")] {
+                    if let Some(value) = source.get(source_field).and_then(Value::as_i64).filter(|value| *value > 0) {
+                        object.insert(field.to_string(), json!(value));
+                    }
+                }
+            }
+        }
+    }
     let content = decorate_catalog_context_windows(
-        catalog_json,
+        &source_catalog.to_string(),
         slots,
         &account.api_model_context_windows,
         default_window,
     )?;
-    let Some(key_config) = model_provider_key_config_for_account(account) else {
-        return Ok(content);
-    };
-    let Some(limits) = key_config
-        .get("modelAutoCompactTokenLimits")
-        .and_then(Value::as_object)
-    else {
-        return Ok(content);
-    };
-    apply_auto_compact_limits_to_catalog(&content, slots, limits)
+    let empty_limits = serde_json::Map::new();
+    let limits = key_config.as_ref()
+        .and_then(|key| key.get("modelAutoCompactTokenLimits"))
+        .and_then(Value::as_object).unwrap_or(&empty_limits);
+    apply_auto_compact_limits_to_catalog(&content, slots, limits, default_limit)
 }
 
 fn apply_auto_compact_limits_to_catalog(
     content: &str,
     slots: &[ProviderGatewayModelSlot],
     limits: &serde_json::Map<String, Value>,
+    default_limit: Option<i64>,
 ) -> Result<String, String> {
     let mut catalog: Value = serde_json::from_str(&content)
         .map_err(|error| format!("解析账号模型目录失败: {}", error))?;
@@ -966,7 +988,9 @@ fn apply_auto_compact_limits_to_catalog(
             let limit = slot
                 .and_then(|slot| lookup_explicit_catalog_context_window(slot, &explicit_limits))
                 .or_else(|| limits.iter().find_map(|(name, value)|
-                    name.eq_ignore_ascii_case(slug).then(|| value.as_i64()).flatten()));
+                    name.eq_ignore_ascii_case(slug).then(|| value.as_i64()).flatten()))
+                .or(default_limit.filter(|value| *value > 0))
+                .or_else(|| model.get("auto_compact_token_limit").and_then(Value::as_i64));
             let window = model.get("context_window").and_then(Value::as_i64);
             if let (Some(limit), Some(window)) = (limit, window) {
                 if limit <= 0 || limit >= window {
@@ -990,6 +1014,11 @@ pub(crate) fn read_toml_model_context_window(doc: &Document) -> Option<i64> {
         .and_then(|item| item.as_integer())
 }
 
+pub(crate) fn read_toml_model_auto_compact_token_limit(doc: &Document) -> Option<i64> {
+    doc.get("model_auto_compact_token_limit")
+        .and_then(|item| item.as_integer())
+}
+
 pub(crate) fn read_file_model_context_window(path: &std::path::Path) -> Option<i64> {
     let existing = std::fs::read_to_string(path).ok()?;
     if existing.trim().is_empty() {
@@ -998,6 +1027,12 @@ pub(crate) fn read_file_model_context_window(path: &std::path::Path) -> Option<i
     let doc =
         crate::modules::codex_config_format::read_codex_config_doc_from_str(&existing).ok()?;
     read_toml_model_context_window(&doc)
+}
+
+pub(crate) fn read_file_model_auto_compact_token_limit(path: &std::path::Path) -> Option<i64> {
+    let existing = std::fs::read_to_string(path).ok()?;
+    let doc = crate::modules::codex_config_format::read_codex_config_doc_from_str(&existing).ok()?;
+    read_toml_model_auto_compact_token_limit(&doc)
 }
 
 /// Build a Codex client catalog that keeps official shell slugs for display, but copies
@@ -2626,8 +2661,9 @@ fn write_provider_gateway_model_catalog_with_templates(
     };
     let config_path = profile_config_path(profile_dir);
     let default_window = read_file_model_context_window(&config_path);
+    let default_limit = read_file_model_auto_compact_token_limit(&config_path);
     let content = if let Some(account) = account {
-        decorate_account_catalog_context_windows(&raw, slots, account, default_window)?
+        decorate_account_catalog_context_windows(&raw, slots, account, default_window, default_limit)?
     } else {
         decorate_catalog_context_windows(&raw, slots, &HashMap::new(), default_window)?
     };

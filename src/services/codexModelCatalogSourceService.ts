@@ -3,11 +3,17 @@ import type { CodexExperimentalModelDefinition } from "../types/codex";
 
 export type CodexModelCatalogSource = "codex" | "upstream" | "cockpit";
 
+export type CodexModelSourceMetadata = {
+  contextWindow?: number;
+  autoCompactTokenLimit?: number;
+};
+
 export type CodexModelCatalogSourceInfo = {
   source: CodexModelCatalogSource;
   fetchedAt: number;
   manuallyAdjusted?: boolean;
   cacheInfo?: string;
+  modelMetadata?: Record<string, CodexModelSourceMetadata>;
 };
 
 export function normalizeCodexModelCatalogSourceInfo(value: unknown): CodexModelCatalogSourceInfo | undefined {
@@ -23,6 +29,18 @@ export function normalizeCodexModelCatalogSourceInfo(value: unknown): CodexModel
     cacheInfo: typeof (value as { cacheInfo?: unknown }).cacheInfo === "string"
       ? (value as { cacheInfo: string }).cacheInfo
       : undefined,
+    modelMetadata: Object.fromEntries(Object.entries(
+      (value as { modelMetadata?: unknown }).modelMetadata &&
+        typeof (value as { modelMetadata?: unknown }).modelMetadata === "object"
+        ? (value as { modelMetadata: Record<string, unknown> }).modelMetadata : {},
+    ).flatMap(([id, metadata]) => {
+      if (!metadata || typeof metadata !== "object") return [];
+      const window = (metadata as { contextWindow?: unknown }).contextWindow;
+      const limit = (metadata as { autoCompactTokenLimit?: unknown }).autoCompactTokenLimit;
+      const contextWindow = typeof window === "number" && Number.isSafeInteger(window) && window > 0 ? window : undefined;
+      const autoCompactTokenLimit = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
+      return contextWindow || autoCompactTokenLimit ? [[id, { contextWindow, autoCompactTokenLimit }]] : [];
+    })),
   };
 }
 

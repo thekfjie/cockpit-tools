@@ -1021,11 +1021,16 @@
     }
 
     #[test]
-    fn model_context_overrides_require_positive_pairs_and_strict_compact_limit() {
+    fn model_context_overrides_allow_independent_values_and_reject_invalid_pairs() {
+        for (window, compact) in [(None, Some(1)), (Some(100), None)] {
+            let definition = CodexExperimentalModelDefinition {
+                model_id: "custom-model".into(), display_name: "Custom".into(),
+                reasoning_efforts: None, context_window: window, auto_compact_token_limit: compact,
+            };
+            assert!(super::normalize_experimental_model_definitions(vec![definition]).is_ok());
+        }
         for (window, compact, error) in [
             (Some(0), Some(1), "EXPERIMENTAL_MODEL_CATALOG_CONTEXT_WINDOW_INVALID"),
-            (None, Some(1), "EXPERIMENTAL_MODEL_CATALOG_CONTEXT_WINDOW_INVALID"),
-            (Some(100), Some(0), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_INVALID"),
             (Some(100), Some(-1), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_INVALID"),
             (Some(100), Some(100), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_RANGE_INVALID"),
             (Some(100), Some(101), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_RANGE_INVALID"),
@@ -1048,6 +1053,46 @@
         .expect("context-only definition should derive the compact limit");
         assert_eq!(derived[0].context_window, Some(516_000));
         assert_eq!(derived[0].auto_compact_token_limit, Some(464_400));
+    }
+
+    #[test]
+    fn source_metadata_follows_global_context_and_conflicting_model_override_is_rejected() {
+        let base_dir = make_temp_dir("codex-source-metadata-global-priority");
+        fs::write(base_dir.join("config.toml"),
+            "model_context_window = 2760000\nmodel_auto_compact_token_limit = 2750000\n")
+            .expect("write global context");
+        let ids = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
+        let models = ids.iter().map(|id| CodexExperimentalModelDefinition {
+            model_id: (*id).into(), display_name: (*id).into(), reasoning_efforts: None,
+            context_window: None, auto_compact_token_limit: None,
+        }).collect::<Vec<_>>();
+        super::save_model_catalog_for_base_dir_preserving_context(&base_dir, true, models.clone(), None)
+            .expect("save models");
+        super::save_model_catalog_source_for_base_dir(&base_dir, super::CodexModelCatalogSourceInfo {
+            source: "codex".into(), fetched_at: 1, manually_adjusted: false,
+            cache_info: None,
+            model_metadata: ids.iter().map(|id| ((*id).into(),
+                crate::models::codex::CodexModelSourceMetadata {
+                    context_window: Some(1_050_000), auto_compact_token_limit: Some(900_000),
+                })).collect(),
+        }).expect("save source metadata");
+        super::save_model_catalog_for_base_dir_preserving_context(&base_dir, true, models.clone(), None)
+            .expect("regenerate catalog");
+        let catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            base_dir.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)).expect("read catalog"))
+            .expect("parse catalog");
+        for id in ids {
+            let model = catalog["models"].as_array().unwrap().iter()
+                .find(|model| model["slug"] == id).expect("model in catalog");
+            assert_eq!(model["context_window"], 2_760_000);
+            assert_eq!(model["auto_compact_token_limit"], 2_750_000);
+        }
+        let mut conflicting = models;
+        conflicting[0].context_window = Some(1_050_000);
+        let error = super::save_model_catalog_for_base_dir_preserving_context(
+            &base_dir, true, conflicting, None).expect_err("reject effective threshold conflict");
+        assert!(error.contains("gpt-6-astra") && error.contains("2750000") && error.contains("1050000"));
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
     }
 
     #[test]

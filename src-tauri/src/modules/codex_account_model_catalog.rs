@@ -1017,14 +1017,23 @@ pub fn save_model_catalog_source_for_base_dir(
         return Err("无效的模型来源".to_string());
     }
     let path = experimental_model_config_path(base_dir);
-    let content = fs::read_to_string(&path)
+    let previous_content = fs::read_to_string(&path)
         .map_err(|error| format!("读取模型配置失败: {}", error))?;
-    let mut config: ExperimentalModelCatalogConfig = serde_json::from_str(&content)
+    let mut config: ExperimentalModelCatalogConfig = serde_json::from_str(&previous_content)
         .map_err(|error| format!("解析模型配置失败: {}", error))?;
+    let config_path = get_config_toml_path(base_dir);
+    let doc = crate::modules::codex_config_format::load_codex_config_doc(&config_path)?;
+    effective_model_catalog_for_doc(&config.models, &doc, Some(&source))?;
     config.source = Some(source);
     let content = serde_json::to_string_pretty(&config)
         .map_err(|error| format!("序列化模型来源失败: {}", error))?;
-    write_string_atomic(&path, &(content + "\n"))
+    write_string_atomic(&path, &(content + "\n"))?;
+    if let Err(error) = reapply_experimental_model_policy_if_enabled(base_dir) {
+        write_string_atomic(&path, &previous_content)
+            .map_err(|restore_error| format!("{}；恢复模型来源失败: {}", error, restore_error))?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn experimental_model_policy_enabled(base_dir: &Path) -> bool {
@@ -1058,6 +1067,7 @@ fn apply_model_context_config_to_catalog(
     models: &[CodexExperimentalModelDefinition],
     global_context_window: Option<i64>,
     global_auto_compact_token_limit: Option<i64>,
+    source_metadata: Option<&HashMap<String, crate::models::codex::CodexModelSourceMetadata>>,
 ) -> Result<(), String> {
     let Some(catalog_models) = catalog
         .get_mut("models")
@@ -1078,14 +1088,22 @@ fn apply_model_context_config_to_catalog(
         let definition = models
             .iter()
             .find(|model| model.model_id.eq_ignore_ascii_case(slug));
-        let source_context_window = catalog_model
+        let metadata = source_metadata.and_then(|items| items.iter()
+            .find(|(id, _)| id.eq_ignore_ascii_case(slug)).map(|(_, item)| item));
+        let source_context_window = metadata
+            .and_then(|item| item.context_window)
+            .filter(|value| *value > 0)
+            .or_else(|| catalog_model
             .get("context_window")
             .and_then(serde_json::Value::as_i64)
-            .filter(|value| *value > 0);
-        let source_auto_compact_token_limit = catalog_model
+            .filter(|value| *value > 0));
+        let source_auto_compact_token_limit = metadata
+            .and_then(|item| item.auto_compact_token_limit)
+            .filter(|value| *value > 0)
+            .or_else(|| catalog_model
             .get("auto_compact_token_limit")
             .and_then(serde_json::Value::as_i64)
-            .filter(|value| *value > 0);
+            .filter(|value| *value > 0));
         let context_window = definition
             .and_then(|model| model.context_window)
             .filter(|value| *value > 0)
@@ -1137,7 +1155,7 @@ pub(crate) fn decorate_managed_model_catalog_for_profile(
     let mut catalog = serde_json::from_str::<serde_json::Value>(catalog_json)
         .map_err(|error| format!("解析 Codex 受管模型目录失败: {}", error))?;
     let models = read_experimental_model_definitions(base_dir);
-    apply_model_context_config_to_catalog(&mut catalog, &models, None, None)?;
+    apply_model_context_config_to_catalog(&mut catalog, &models, None, None, None)?;
     // 统一口径收口：即使没有任何逐模型覆盖，也要保证受管目录里每个声明了上下文窗口的
     // 模型都带自动压缩阈值（缺失时按 90% 派生）。
     crate::modules::codex_protocol::ensure_client_model_auto_compact_limits(&mut catalog);
@@ -1145,8 +1163,11 @@ pub(crate) fn decorate_managed_model_catalog_for_profile(
         .map_err(|error| format!("序列化 Codex 受管模型目录失败: {}", error))
 }
 
-fn build_experimental_model_catalog(base_dir: &Path, doc: &Document) -> Result<String, String> {
-    let model_definitions = read_experimental_model_definitions(base_dir);
+fn effective_model_catalog_for_doc(
+    model_definitions: &[CodexExperimentalModelDefinition],
+    doc: &Document,
+    source: Option<&CodexModelCatalogSourceInfo>,
+) -> Result<serde_json::Value, String> {
     let definitions = model_definitions
         .iter()
         .map(|model| {
@@ -1170,10 +1191,18 @@ fn build_experimental_model_catalog(base_dir: &Path, doc: &Document) -> Result<S
         .filter(|value| *value > 0);
     apply_model_context_config_to_catalog(
         &mut catalog,
-        &model_definitions,
+        model_definitions,
         global_context_window,
         global_auto_compact_token_limit,
+        source.map(|source| &source.model_metadata),
     )?;
+    Ok(catalog)
+}
+
+fn build_experimental_model_catalog(base_dir: &Path, doc: &Document) -> Result<String, String> {
+    let model_definitions = read_experimental_model_definitions(base_dir);
+    let source = read_experimental_model_catalog_config(base_dir).and_then(|config| config.source);
+    let catalog = effective_model_catalog_for_doc(&model_definitions, doc, source.as_ref())?;
     serde_json::to_string_pretty(&catalog)
         .map(|mut content| {
             content.push('\n');
@@ -1848,6 +1877,21 @@ fn write_quick_config_to_config_toml_with_default_mode(
         }
     }
 
+    let effective_experimental_enabled = experimental_model_catalog_enabled
+        .or_else(|| experimental_model_policy_enabled(base_dir).then_some(true));
+    if effective_experimental_enabled == Some(true) {
+        let candidates = experimental_model_catalog_models.as_ref()
+            .cloned()
+            .unwrap_or_else(|| read_experimental_model_definitions(base_dir));
+        let candidates = normalize_experimental_model_definitions(
+            crate::modules::codex_local_access::overlay_rendered_pool_models_on_experimental_catalog(
+                base_dir, candidates,
+            ),
+        )?;
+        let source = read_experimental_model_catalog_config(base_dir).and_then(|config| config.source);
+        effective_model_catalog_for_doc(&candidates, &doc, source.as_ref())?;
+    }
+
     // Saved models remain available for a later explicit re-enable.
     if let Some(models) = experimental_model_catalog_models {
         persist_experimental_model_definitions(
@@ -1863,8 +1907,6 @@ fn write_quick_config_to_config_toml_with_default_mode(
             .map_err(|error| format!("写入模型清单自定义标记失败: {}", error))?;
     }
 
-    let effective_experimental_enabled = experimental_model_catalog_enabled
-        .or_else(|| experimental_model_policy_enabled(base_dir).then_some(true));
     let remove_experimental_catalog_after_write = apply_experimental_model_catalog_to_doc(
         base_dir,
         &mut doc,
@@ -2533,6 +2575,7 @@ fn sync_api_key_model_catalog_to_dir(
         &slots,
         account,
         crate::modules::codex_local_access::read_toml_model_context_window(&doc),
+        crate::modules::codex_local_access::read_toml_model_auto_compact_token_limit(&doc),
     )?;
     validate_catalog_against_global_compaction_limit(&content, &doc)?;
     let content = decorate_managed_model_catalog_for_profile(base_dir, &content)?;

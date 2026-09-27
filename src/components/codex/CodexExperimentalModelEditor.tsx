@@ -27,7 +27,9 @@ import {
 import {
   deriveAutoCompactTokenLimitInput,
   validateModelContext,
+  resolveEffectiveModelContext,
 } from "../../utils/codexModelContext";
+import type { CodexModelCatalogSourceInfo } from "../../services/codexModelCatalogSourceService";
 import "./CodexExperimentalModelEditor.css";
 
 export interface CodexExperimentalModelSource {
@@ -45,6 +47,9 @@ export interface CodexAvailableChannel {
 
 interface CodexExperimentalModelEditorProps {
   models: CodexExperimentalModelDefinition[];
+  sourceInfo?: CodexModelCatalogSourceInfo | null;
+  globalContextWindow?: number;
+  globalAutoCompactTokenLimit?: number;
   defaultModelId?: string | null;
   resetModels?: CodexExperimentalModelDefinition[];
   resetDefaultModelId?: string | null;
@@ -316,6 +321,9 @@ function nextModelDefinition(
 
 export function CodexExperimentalModelEditor({
   models,
+  sourceInfo,
+  globalContextWindow,
+  globalAutoCompactTokenLimit,
   defaultModelId = null,
   resetModels = [],
   resetDefaultModelId = null,
@@ -730,23 +738,22 @@ export function CodexExperimentalModelEditor({
       );
     }
     if (value === 1_000_000) return "1M";
+    if (value >= 1_000_000) return `${value / 1_000_000}M`;
     if (value % 1_000 === 0) return `${value / 1_000}K`;
     return value.toLocaleString();
   };
 
   const contextLabel = (model: CodexExperimentalModelDefinition) => {
-    const preset = resolveContextPreset(model);
-    if (preset === "default") {
-      return t(
-        "codex.experimentalModelCatalog.models.contextDefault",
-        "跟随模型",
-      );
-    }
-    if (preset === "preset_516k") return "516K/464K";
-    if (preset === "preset_1m") return "1M/900K";
-    return `${formatTokenSize(model.context_window)}/${formatTokenSize(
-      model.auto_compact_token_limit,
-    )}`;
+    const effective = resolveEffectiveModelContext(model, globalContextWindow,
+      globalAutoCompactTokenLimit, sourceInfo?.modelMetadata?.[model.model_id]);
+    return `${formatTokenSize(effective.contextWindow)}/${formatTokenSize(effective.autoCompactTokenLimit)}`;
+  };
+
+  const contextSourceLabel = (model: CodexExperimentalModelDefinition) => {
+    const effective = resolveEffectiveModelContext(model, globalContextWindow,
+      globalAutoCompactTokenLimit, sourceInfo?.modelMetadata?.[model.model_id]);
+    const names = { model: "逐模型", global: "实例全局", source: "来源", builtin: "内置" };
+    return `窗口：${names[effective.contextSource]} · 阈值：${names[effective.compactSource]}`;
   };
 
   const showModelSource = Boolean(resolveModelSource);
@@ -1162,9 +1169,9 @@ export function CodexExperimentalModelEditor({
                     }}
                     disabled={disabled}
                     aria-expanded={openContextIndex === index}
-                    title={contextLabel(model)}
+                    title={`${contextLabel(model)} · ${contextSourceLabel(model)}`}
                   >
-                    <span>{contextLabel(model)}</span>
+                    <span>{contextLabel(model)}<small>{contextSourceLabel(model)}</small></span>
                     <ChevronDown size={14} />
                   </button>
                   {openContextIndex === index && (
@@ -1392,7 +1399,7 @@ export function CodexExperimentalModelEditor({
                       )}
                 </span>
                 <span className="codex-experimental-model-summary__context">
-                  {contextLabel(model)}
+                  {contextLabel(model)}<small>{contextSourceLabel(model)}</small>
                 </span>
                 <span
                   className={`codex-experimental-model-summary__default${

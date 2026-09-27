@@ -1,4 +1,22 @@
 import type { CodexExperimentalModelDefinition } from '../types/codex';
+import type { CodexModelSourceMetadata } from '../services/codexModelCatalogSourceService';
+
+type ContextValueSource = 'model' | 'global' | 'source' | 'builtin';
+
+export function resolveEffectiveModelContext(
+  model: CodexExperimentalModelDefinition,
+  globalContextWindow?: number,
+  globalAutoCompactTokenLimit?: number,
+  sourceMetadata?: CodexModelSourceMetadata,
+) {
+  const contextWindow = model.context_window ?? globalContextWindow ?? sourceMetadata?.contextWindow;
+  const autoCompactTokenLimit = model.auto_compact_token_limit ?? globalAutoCompactTokenLimit ?? sourceMetadata?.autoCompactTokenLimit;
+  const contextSource: ContextValueSource = model.context_window !== undefined ? 'model'
+    : globalContextWindow !== undefined ? 'global' : sourceMetadata?.contextWindow !== undefined ? 'source' : 'builtin';
+  const compactSource: ContextValueSource = model.auto_compact_token_limit !== undefined ? 'model'
+    : globalAutoCompactTokenLimit !== undefined ? 'global' : sourceMetadata?.autoCompactTokenLimit !== undefined ? 'source' : 'builtin';
+  return { contextWindow, autoCompactTokenLimit, contextSource, compactSource };
+}
 
 /** 自动压缩阈值统一取上下文窗口的 90%（与 1M 档 1000000/900000 一致）。 */
 export const AUTO_COMPACT_PERCENT = 90;
@@ -58,10 +76,12 @@ export function validateEffectiveModelContexts(
   models: CodexExperimentalModelDefinition[],
   globalContextWindow?: number,
   globalAutoCompactTokenLimit?: number,
+  sourceMetadata?: Record<string, CodexModelSourceMetadata>,
 ): string | null {
   for (const model of models) {
-    const window = model.context_window ?? globalContextWindow;
-    const limit = model.auto_compact_token_limit ?? globalAutoCompactTokenLimit;
+    const { contextWindow: window, autoCompactTokenLimit: limit } = resolveEffectiveModelContext(
+      model, globalContextWindow, globalAutoCompactTokenLimit, sourceMetadata?.[model.model_id],
+    );
     if (window !== undefined && limit !== undefined && limit >= window) {
       return `模型 ${model.model_id} 的自动压缩阈值 ${limit} 必须小于上下文窗口 ${window}`;
     }

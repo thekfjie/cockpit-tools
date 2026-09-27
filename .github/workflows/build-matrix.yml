@@ -184,6 +184,16 @@ jobs:
         run: cargo test model_management_default_off_migration --lib
         working-directory: src-tauri
 
+      - name: 🧪 Test Windows model context priority
+        if: matrix.label == 'windows-latest'
+        run: cargo test model_context --lib
+        working-directory: src-tauri
+
+      - name: 🧪 Test Windows source metadata
+        if: matrix.label == 'windows-latest'
+        run: cargo test source_metadata --lib
+        working-directory: src-tauri
+
       - name: 🐹 Go setup
         uses: actions/setup-go@v5
         with:

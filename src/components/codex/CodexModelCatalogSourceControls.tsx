@@ -64,9 +64,18 @@ export function CodexModelCatalogSourceControls({
           t("codex.modelManagement.sourceEmpty", "来源没有返回可用模型，已保留当前列表。"),
         );
       }
-      onReplace(models, {
+      const modelMetadata = Object.fromEntries(models.flatMap((model) => {
+        if (!model.context_window && !model.auto_compact_token_limit) return [];
+        return [[model.model_id, {
+          contextWindow: model.context_window,
+          autoCompactTokenLimit: model.auto_compact_token_limit,
+        }]];
+      }));
+      const definitions = models.map(({ context_window: _window, auto_compact_token_limit: _limit, ...model }) => model);
+      onReplace(definitions, {
         source: nextSource,
         fetchedAt: Date.now(),
+        modelMetadata,
         cacheInfo: nextSource === "codex"
           ? "已避开本机缓存；Codex 服务端缓存未知"
           : nextSource === "upstream" ? "上游缓存状态未知" : "随包预设",

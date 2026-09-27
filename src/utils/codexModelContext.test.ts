@@ -8,7 +8,7 @@ import {
   validateModelContext,
 } from './codexModelContext';
 
-test('model context follows metadata unless both overrides are explicitly configured', () => {
+test('model context accepts complete and empty overrides', () => {
   assert.equal(validateModelContext({}), null);
   assert.equal(validateModelContext({ context_window: 516000, auto_compact_token_limit: 464400 }), null);
   assert.equal(validateModelContext({ context_window: 1000000, auto_compact_token_limit: 900000 }), null);
@@ -64,5 +64,16 @@ test('effective context applies global values to models without overrides', () =
   assert.match(
     validateEffectiveModelContexts([{ ...models[0], context_window: 1_050_000 }], 2_760_000, 2_750_000) ?? '',
     /gpt-6-sol.*2750000.*1050000/,
+  );
+});
+
+test('source metadata is used after per-model and instance values', () => {
+  const model = { model_id: 'model-x', display_name: 'Model X' };
+  const metadata = { 'model-x': { contextWindow: 1_050_000, autoCompactTokenLimit: 900_000 } };
+  assert.equal(validateEffectiveModelContexts([model], undefined, undefined, metadata), null);
+  assert.equal(validateEffectiveModelContexts([model], 2_760_000, 2_750_000, metadata), null);
+  assert.match(
+    validateEffectiveModelContexts([{ ...model, context_window: 1_050_000 }],
+      2_760_000, 2_750_000, metadata) ?? '', /model-x.*2750000.*1050000/,
   );
 });
