@@ -551,9 +551,9 @@ pub async fn codex_list_model_catalog_source_models(
         return Err("未知模型来源".to_string());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let expected_oauth_id = if let Some(account_id) = account_id.as_deref() {
+        let oauth = if let Some(account_id) = account_id.as_deref() {
             let account = modules::codex_account::load_account(account_id)
-                .ok_or("API Key 账号不存在")?;
+                .ok_or("当前账号不存在")?;
             let oauth_id = if account.is_api_key_auth() {
                 account.bound_oauth_account_id.as_deref().map(str::trim)
                     .filter(|value| !value.is_empty())
@@ -568,41 +568,36 @@ pub async fn codex_list_model_catalog_source_models(
                 || oauth.is_web_session_auth() || oauth.requires_reauth {
                 return Err("绑定的 OAuth 账号需要重新授权".to_string());
             }
-            Some(oauth_id)
+            oauth
         } else {
-            None
+            let profile = if let Some(instance_id) = instance_id.as_deref() {
+                resolve_instance_base_dir(instance_id)?
+            } else {
+                modules::codex_instance::get_default_codex_home()?
+            };
+            let oauth_id = modules::codex_account::oauth_account_id_for_runtime_dir(&profile)
+                .ok_or("请先绑定 OAuth 账号，再从 Codex 端刷新模型")?;
+            modules::codex_account::load_account(&oauth_id)
+                .ok_or("绑定的 OAuth 账号不存在，请重新绑定")?
         };
 
         let profile = if let Some(instance_id) = instance_id.as_deref() {
             resolve_instance_base_dir(instance_id)?
-        } else if let Some(account_id) = account_id.as_deref() {
-            let default = modules::codex_instance::get_default_codex_home()?;
-            let current_id = modules::codex_account::load_account_index().current_account_id;
-            if current_id.as_deref() == Some(account_id) {
-                default
-            } else {
-                let store = modules::codex_instance::load_instance_store()?;
-                store.instances.into_iter()
-                    .find(|item| item.bind_account_id.as_deref() == Some(account_id))
-                    .map(|item| PathBuf::from(item.user_data_dir))
-                    .ok_or("请先用此 API Key 启动 Codex，再从 Codex 端刷新模型")?
-            }
         } else {
             modules::codex_instance::get_default_codex_home()?
         };
-        let runtime_oauth_id = modules::codex_account::oauth_account_id_for_runtime_dir(&profile);
-        if runtime_oauth_id.is_none() || expected_oauth_id.as_ref().is_some_and(|id| runtime_oauth_id.as_ref() != Some(id)) {
-            return Err("当前 Codex 实例尚未使用绑定的 OAuth 账号，请先启动该账号".to_string());
-        }
         let isolated_profile = std::env::temp_dir().join(format!(
             "cockpit-codex-model-list-{}",
             uuid::Uuid::new_v4()
         ));
-        modules::instance_store::copy_dir_recursive(&profile, &isolated_profile)?;
+        fs::create_dir_all(&isolated_profile)
+            .map_err(|error| format!("创建 Codex 临时配置失败: {}", error))?;
         let isolated_result = (|| {
             let config_path = isolated_profile.join("config.toml");
-            if config_path.is_file() {
-                let content = fs::read_to_string(&config_path).unwrap_or_default();
+            let source_config_path = profile.join("config.toml");
+            if source_config_path.is_file() {
+                let content = fs::read_to_string(&source_config_path)
+                    .map_err(|error| format!("读取当前实例配置失败: {}", error))?;
                 if !content.trim().is_empty() {
                     let mut doc = modules::codex_config_format::read_codex_config_doc_from_str(&content)?;
                     let _ = doc.remove("model_catalog_json");
@@ -612,7 +607,7 @@ pub async fn codex_list_model_catalog_source_models(
                     modules::codex_config_format::write_codex_config_toml_atomic(&config_path, &content)?;
                 }
             }
-            let _ = fs::remove_file(isolated_profile.join("models_cache.json"));
+            modules::codex_account::write_model_list_oauth_auth_file(&isolated_profile, &oauth)?;
             modules::codex_official_app_server::list_models(&isolated_profile)
         })();
         let _ = fs::remove_dir_all(&isolated_profile);

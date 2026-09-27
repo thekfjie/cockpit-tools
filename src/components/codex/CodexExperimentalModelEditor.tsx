@@ -25,7 +25,6 @@ import {
   moveModel,
 } from "../../utils/codexExperimentalModelOrder";
 import {
-  deriveAutoCompactTokenLimit,
   deriveAutoCompactTokenLimitInput,
   validateModelContext,
 } from "../../utils/codexModelContext";
@@ -73,23 +72,7 @@ const CONTEXT_PRESETS = {
   preset_516k: { context_window: 516000, auto_compact_token_limit: 464400 },
   preset_1m: { context_window: 1000000, auto_compact_token_limit: 900000 },
 } as const;
-/** 自定义上下文弹框的兜底值：官方基准档 272K（不是 1M）。 */
-const DEFAULT_CONTEXT_DRAFT = {
-  context_window: 272000,
-  auto_compact_token_limit: 244800,
-} as const;
 type ContextPresetId = "default" | keyof typeof CONTEXT_PRESETS | "custom";
-
-/** 压缩阈值留空时按上下文窗口的 90% 派生；上下文非法时回落 NaN 交给校验报错。 */
-function resolveDraftAutoCompactTokenLimit(
-  contextWindow: number,
-  compactInput: string,
-): number {
-  const rawCompact = compactInput.trim();
-  if (rawCompact !== "") return Number(rawCompact);
-  if (!Number.isInteger(contextWindow) || contextWindow <= 0) return Number.NaN;
-  return deriveAutoCompactTokenLimit(contextWindow);
-}
 
 interface CustomContextDraft {
   index: number;
@@ -99,8 +82,8 @@ interface CustomContextDraft {
 
 interface CustomContextDialogProps {
   draft: CustomContextDraft;
-  contextWindow: number;
-  autoCompactTokenLimit: number;
+  contextWindow?: number;
+  autoCompactTokenLimit?: number;
   error: string | null;
   onContextWindowChange: (value: string) => void;
   onAutoCompactTokenLimitChange: (value: string) => void;
@@ -163,13 +146,15 @@ function CustomContextDialog({
               value={draft.contextWindow}
               onChange={(event) => onContextWindowChange(event.target.value)}
               className={
-                !Number.isInteger(contextWindow) || contextWindow <= 0
+                contextWindow !== undefined &&
+                (!Number.isInteger(contextWindow) || contextWindow <= 0)
                   ? "has-error"
                   : ""
               }
               autoFocus
             />
-            {(!Number.isInteger(contextWindow) || contextWindow <= 0) && (
+            {contextWindow !== undefined &&
+              (!Number.isInteger(contextWindow) || contextWindow <= 0) && (
               <small className="codex-experimental-model-editor__error">
                 {t(
                   "codex.experimentalModelCatalog.models.validation.contextWindow",
@@ -194,15 +179,17 @@ function CustomContextDialog({
                 onAutoCompactTokenLimitChange(event.target.value)
               }
               className={
-                !Number.isInteger(autoCompactTokenLimit) ||
-                autoCompactTokenLimit <= 0 ||
-                autoCompactTokenLimit >= contextWindow
+                autoCompactTokenLimit !== undefined &&
+                (!Number.isInteger(autoCompactTokenLimit) ||
+                  autoCompactTokenLimit <= 0 ||
+                  (contextWindow !== undefined && autoCompactTokenLimit >= contextWindow))
                   ? "has-error"
                   : ""
               }
             />
-            {(!Number.isInteger(autoCompactTokenLimit) ||
-              autoCompactTokenLimit <= 0) && (
+            {autoCompactTokenLimit !== undefined &&
+              (!Number.isInteger(autoCompactTokenLimit) ||
+                autoCompactTokenLimit <= 0) && (
               <small className="codex-experimental-model-editor__error">
                 {t(
                   "codex.experimentalModelCatalog.models.validation.autoCompact",
@@ -210,7 +197,9 @@ function CustomContextDialog({
                 )}
               </small>
             )}
-            {Number.isInteger(autoCompactTokenLimit) &&
+            {contextWindow !== undefined &&
+              autoCompactTokenLimit !== undefined &&
+              Number.isInteger(autoCompactTokenLimit) &&
               autoCompactTokenLimit > 0 &&
               autoCompactTokenLimit >= contextWindow && (
                 <small className="codex-experimental-model-editor__error">
@@ -662,29 +651,19 @@ export function CodexExperimentalModelEditor({
   const openCustomContextEditor = (index: number) => {
     const model = models[index];
     setOpenContextIndex(null);
-    const contextWindow =
-      model.context_window ?? DEFAULT_CONTEXT_DRAFT.context_window;
     setCustomContextDraft({
       index,
-      contextWindow: String(contextWindow),
-      // 不再用 1M 兜底：压缩阈值缺失时按上下文窗口的 90% 派生。
-      autoCompactTokenLimit: String(
-        model.auto_compact_token_limit ??
-          (deriveAutoCompactTokenLimitInput(String(contextWindow)) ||
-            DEFAULT_CONTEXT_DRAFT.auto_compact_token_limit),
-      ),
+      contextWindow: String(model.context_window ?? ""),
+      autoCompactTokenLimit: String(model.auto_compact_token_limit ?? ""),
     });
   };
 
-  const customContextWindow = customContextDraft
+  const customContextWindow = customContextDraft?.contextWindow.trim()
     ? Number(customContextDraft.contextWindow.trim())
-    : Number.NaN;
-  const customAutoCompactTokenLimit = customContextDraft
-    ? resolveDraftAutoCompactTokenLimit(
-        customContextWindow,
-        customContextDraft.autoCompactTokenLimit,
-      )
-    : Number.NaN;
+    : undefined;
+  const customAutoCompactTokenLimit = customContextDraft?.autoCompactTokenLimit.trim()
+    ? Number(customContextDraft.autoCompactTokenLimit.trim())
+    : undefined;
   const customContextError = customContextDraft
     ? validateModelContext({
         context_window: customContextWindow,

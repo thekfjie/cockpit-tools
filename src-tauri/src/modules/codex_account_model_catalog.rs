@@ -662,6 +662,16 @@ pub fn cockpit_preset_model_definitions() -> Vec<CodexExperimentalModelDefinitio
     default_experimental_model_definitions(&get_codex_home())
 }
 
+pub fn write_model_list_oauth_auth_file(
+    base_dir: &Path,
+    account: &CodexAccount,
+) -> Result<(), String> {
+    let auth = build_auth_file_value(account)?;
+    let content = serde_json::to_string_pretty(&auth)
+        .map_err(|error| format!("序列化 OAuth 认证失败: {}", error))?;
+    write_string_atomic(&base_dir.join("auth.json"), &content)
+}
+
 /// Add newly shipped models to an unchanged, previously generated default list.
 /// Explicitly curated lists (including lists where the user removed a shipped model)
 /// remain untouched so account switching does not override user visibility choices.
@@ -823,9 +833,7 @@ pub(crate) fn normalize_experimental_model_definitions(
         if !seen.insert(key) {
             return Err("EXPERIMENTAL_MODEL_CATALOG_MODEL_ID_DUPLICATE".to_string());
         }
-        if model.context_window.is_some_and(|value| value <= 0)
-            || (model.context_window.is_none() && model.auto_compact_token_limit.is_some())
-        {
+        if model.context_window.is_some_and(|value| value <= 0) {
             return Err("EXPERIMENTAL_MODEL_CATALOG_CONTEXT_WINDOW_INVALID".to_string());
         }
         if model.auto_compact_token_limit.is_some_and(|value| value <= 0) {
@@ -1022,16 +1030,75 @@ fn persist_experimental_model_policy(base_dir: &Path, enabled: bool) -> Result<(
 fn apply_model_context_config_to_catalog(
     catalog: &mut serde_json::Value,
     models: &[CodexExperimentalModelDefinition],
-) {
-    let definitions = models
-        .iter()
-        .map(|model| (
-            model.model_id.clone(),
-            model.context_window,
-            model.auto_compact_token_limit,
-        ))
-        .collect::<Vec<_>>();
-    crate::modules::codex_protocol::apply_model_context_overrides(catalog, &definitions);
+    global_context_window: Option<i64>,
+    global_auto_compact_token_limit: Option<i64>,
+) -> Result<(), String> {
+    let Some(catalog_models) = catalog
+        .get_mut("models")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+
+    for catalog_model in catalog_models {
+        let Some(slug) = catalog_model
+            .get("slug")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let definition = models
+            .iter()
+            .find(|model| model.model_id.eq_ignore_ascii_case(slug));
+        let source_context_window = catalog_model
+            .get("context_window")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0);
+        let source_auto_compact_token_limit = catalog_model
+            .get("auto_compact_token_limit")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0);
+        let context_window = definition
+            .and_then(|model| model.context_window)
+            .filter(|value| *value > 0)
+            .or(global_context_window.filter(|value| *value > 0))
+            .or(source_context_window);
+        let auto_compact_token_limit = definition
+            .and_then(|model| model.auto_compact_token_limit)
+            .filter(|value| *value > 0)
+            .or(global_auto_compact_token_limit.filter(|value| *value > 0))
+            .or(source_auto_compact_token_limit);
+
+        if let (Some(context_window), Some(auto_compact_token_limit)) =
+            (context_window, auto_compact_token_limit)
+        {
+            if auto_compact_token_limit >= context_window {
+                return Err(format!(
+                    "模型 {} 的自动压缩阈值 {} 必须小于上下文窗口 {}",
+                    slug, auto_compact_token_limit, context_window
+                ));
+            }
+        }
+
+        if let Some(object) = catalog_model.as_object_mut() {
+            if let Some(context_window) = context_window {
+                object.insert("context_window".to_string(), serde_json::json!(context_window));
+                object.insert(
+                    "max_context_window".to_string(),
+                    serde_json::json!(context_window),
+                );
+            }
+            if let Some(auto_compact_token_limit) = auto_compact_token_limit {
+                object.insert(
+                    "auto_compact_token_limit".to_string(),
+                    serde_json::json!(auto_compact_token_limit),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn decorate_managed_model_catalog_for_profile(
@@ -1044,7 +1111,7 @@ pub(crate) fn decorate_managed_model_catalog_for_profile(
     let mut catalog = serde_json::from_str::<serde_json::Value>(catalog_json)
         .map_err(|error| format!("解析 Codex 受管模型目录失败: {}", error))?;
     let models = read_experimental_model_definitions(base_dir);
-    apply_model_context_config_to_catalog(&mut catalog, &models);
+    apply_model_context_config_to_catalog(&mut catalog, &models, None, None)?;
     // 统一口径收口：即使没有任何逐模型覆盖，也要保证受管目录里每个声明了上下文窗口的
     // 模型都带自动压缩阈值（缺失时按 90% 派生）。
     crate::modules::codex_protocol::ensure_client_model_auto_compact_limits(&mut catalog);
@@ -1052,7 +1119,7 @@ pub(crate) fn decorate_managed_model_catalog_for_profile(
         .map_err(|error| format!("序列化 Codex 受管模型目录失败: {}", error))
 }
 
-fn build_experimental_model_catalog(base_dir: &Path) -> Result<String, String> {
+fn build_experimental_model_catalog(base_dir: &Path, doc: &Document) -> Result<String, String> {
     let model_definitions = read_experimental_model_definitions(base_dir);
     let definitions = model_definitions
         .iter()
@@ -1067,7 +1134,20 @@ fn build_experimental_model_catalog(base_dir: &Path) -> Result<String, String> {
     let mut catalog =
         crate::modules::codex_protocol::build_codex_client_models_response_with_model_definitions_and_reasoning(&definitions);
     crate::modules::codex_protocol::ensure_codex_reserve_fallback(&mut catalog);
-    apply_model_context_config_to_catalog(&mut catalog, &model_definitions);
+    let global_context_window = doc
+        .get(CODEX_CONFIG_MODEL_CONTEXT_WINDOW_KEY)
+        .and_then(|item| item.as_integer())
+        .filter(|value| *value > 0);
+    let global_auto_compact_token_limit = doc
+        .get(CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT_KEY)
+        .and_then(|item| item.as_integer())
+        .filter(|value| *value > 0);
+    apply_model_context_config_to_catalog(
+        &mut catalog,
+        &model_definitions,
+        global_context_window,
+        global_auto_compact_token_limit,
+    )?;
     serde_json::to_string_pretty(&catalog)
         .map(|mut content| {
             content.push('\n');
@@ -1298,7 +1378,7 @@ fn apply_experimental_model_catalog_to_doc(
     let currently_enabled = managed_catalog_configured && policy_enabled;
 
     if !enabled {
-        if currently_enabled || policy_enabled {
+        if managed_catalog_configured || policy_enabled {
             let previous_state = read_previous_experimental_catalog_state(base_dir);
             if managed_catalog_configured {
                 match previous_state.as_ref() {
@@ -1359,8 +1439,7 @@ fn apply_experimental_model_catalog_to_doc(
         )?;
         doc["model"] = value(DEFAULT_CODEX_MODEL_ID);
     }
-    let generated_content = build_experimental_model_catalog(base_dir)
-        .map_err(|_| "EXPERIMENTAL_MODEL_CATALOG_SERIALIZE_FAILED".to_string())?;
+    let generated_content = build_experimental_model_catalog(base_dir, doc)?;
     if read_previous_experimental_catalog_state(base_dir).is_none() {
         let previous_model = doc.get("model").and_then(|item| item.as_str());
         persist_previous_experimental_catalog_reference(
@@ -1430,14 +1509,11 @@ pub(crate) fn reapply_experimental_model_policy_if_enabled(
     Ok(true)
 }
 
-/// 一次性迁移标记：本版本把历史遗留的「模型管理」统一关闭，之后由用户自己决定。
+/// 一次性修复关闭状态下残留的 Cockpit 目录引用。
 const CODEX_MODEL_MANAGEMENT_DEFAULT_OFF_MARKER_FILE: &str =
-    ".cockpit-model-management-default-off-v1";
+    ".cockpit-model-management-stale-reference-v2";
 
-/// 一次性关闭历史遗留的「模型管理」，恢复跟随官方模型目录。
-///
-/// 只在首次执行时生效（成功后写入标记文件），用户之后自己再开启模型管理不再被干预；
-/// 已保存的模型清单文件会保留，用户重新开启时仍能看到自己的清单。
+/// 保留用户已明确开启的模型管理及所有已保存的模型配置。
 pub fn migrate_model_management_default_off_once(base_dir: &Path) -> Result<bool, String> {
     if base_dir.as_os_str().is_empty() {
         return Ok(false);
@@ -1456,17 +1532,16 @@ pub fn migrate_model_management_default_off_once(base_dir: &Path) -> Result<bool
             .map_err(|error| format!("解析 config.toml 失败: {}", error))?
     };
     let policy_enabled = experimental_model_policy_enabled(base_dir);
+    if policy_enabled {
+        return Ok(false);
+    }
     let managed_catalog_configured = doc
         .get(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY)
         .and_then(|item| item.as_str())
         .is_some_and(|catalog| catalog_ref_targets_cockpit_managed_file(catalog, base_dir));
 
-    if policy_enabled {
-        apply_experimental_model_catalog_to_doc(base_dir, &mut doc, Some(false))?;
-    } else if managed_catalog_configured {
+    if managed_catalog_configured {
         let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
-    }
-    if policy_enabled || managed_catalog_configured {
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("创建 config.toml 目录失败: {}", error))?;
@@ -1476,24 +1551,9 @@ pub fn migrate_model_management_default_off_once(base_dir: &Path) -> Result<bool
             .map_err(|error| format!("写入 config.toml 失败: {}", error))?;
     }
 
-    let managed_catalog_path = experimental_model_catalog_path(base_dir);
-    if managed_catalog_path.exists() {
-        crate::modules::atomic_write::remove_file_locked(&managed_catalog_path).map_err(|error| {
-            format!(
-                "清理 Codex 受管模型目录失败: path={}, error={}",
-                managed_catalog_path.display(),
-                error
-            )
-        })?;
-    }
-    cleanup_legacy_managed_model_catalogs(base_dir);
-    let _ = crate::modules::codex_local_access::invalidate_codex_model_cache(base_dir);
-    persist_experimental_model_policy(base_dir, false)?;
-    clear_previous_experimental_catalog_reference(base_dir)?;
-
-    write_string_atomic(&marker_path, "disabled\n")
+    write_string_atomic(&marker_path, "checked\n")
         .map_err(|error| format!("写入模型管理默认关闭标记失败: {}", error))?;
-    Ok(true)
+    Ok(managed_catalog_configured)
 }
 
 /// 未运行 Codex 的 profile 目录（默认实例 + 托管实例）。
@@ -1757,12 +1817,8 @@ fn write_quick_config_to_config_toml_with_default_mode(
         }
     }
 
-    // A disabled catalog is an opt-out from Cockpit model control. In particular, do not
-    // validate or persist a stale editor draft that the frontend sends together with the
-    // unchecked switch; the state is removed below instead.
-    if let Some(models) = experimental_model_catalog_models
-        .filter(|_| !disabling_experimental_catalog)
-    {
+    // Saved models remain available for a later explicit re-enable.
+    if let Some(models) = experimental_model_catalog_models {
         persist_experimental_model_definitions(
             base_dir,
             crate::modules::codex_local_access::overlay_rendered_pool_models_on_experimental_catalog(
@@ -1783,12 +1839,6 @@ fn write_quick_config_to_config_toml_with_default_mode(
         &mut doc,
         effective_experimental_enabled,
     )?;
-    if disabling_experimental_catalog {
-        // Explicitly disabling this feature is the user's request to return to the official
-        // catalog. Remove both Cockpit-managed and user-supplied model_catalog_json references;
-        // the referenced user file is intentionally preserved for manual reuse later.
-        let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
-    }
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建 config.toml 目录失败: {}", e))?;
@@ -1822,8 +1872,6 @@ fn write_quick_config_to_config_toml_with_default_mode(
     if disabling_experimental_catalog {
         cleanup_legacy_managed_model_catalogs(base_dir);
         clear_previous_experimental_catalog_reference(base_dir)?;
-        clear_experimental_model_catalog_config(base_dir)?;
-        let _ = fs::remove_file(user_customized_model_catalog_marker_path(base_dir));
     }
 
     read_quick_config_from_config_toml(base_dir)
@@ -2674,12 +2722,6 @@ fn sync_or_cleanup_managed_model_catalog_for_dir(
     sync_or_cleanup_account_model_catalog_for_dir(base_dir, account)?;
     if preserve_experimental_policy {
         enforce_experimental_model_policy_for_dir(base_dir)?;
-    } else {
-        // A disabled catalog must not survive a later account/profile switch as latent
-        // Cockpit state. Provider-owned files may still be recreated by the account-specific
-        // sync path above, but the experimental definitions and restore marker are always gone.
-        clear_experimental_model_catalog_config(base_dir)?;
-        clear_previous_experimental_catalog_reference(base_dir)?;
     }
     Ok(())
 }
