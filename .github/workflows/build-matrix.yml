@@ -179,25 +179,6 @@ jobs:
         run: |
           cargo test instance_configuration_save --lib
           cargo test quick_config_catalog_only_context_preservation --lib
-      - name: 🧪 Test Windows model management migration
-        if: matrix.label == 'windows-latest'
-        run: cargo test model_management_default_off_migration --lib
-        working-directory: src-tauri
-
-      - name: 🧪 Test Windows model context priority
-        if: matrix.label == 'windows-latest'
-        run: cargo test model_context --lib
-        working-directory: src-tauri
-
-      - name: 🧪 Test Windows source metadata
-        if: matrix.label == 'windows-latest'
-        run: cargo test source_metadata --lib
-        working-directory: src-tauri
-
-      - name: 🧪 Test Windows per-key compaction limits
-        if: matrix.label == 'windows-latest'
-        run: cargo test auto_compact_limits --lib
-        working-directory: src-tauri
 
       - name: 🐹 Go setup
         uses: actions/setup-go@v5
@@ -216,6 +197,18 @@ jobs:
 
       - name: 🔄 Sync versions
         run: npm run sync-version
+
+      - name: 🧪 Test Windows model management
+        if: matrix.label == 'windows-latest'
+        shell: pwsh
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location src-tauri
+          foreach ($testFilter in @('model_management_default_off_migration', 'model_context', 'source_metadata', 'auto_compact_limits', 'api_key_compaction', 'same_endpoint', 'model_provider_key')) {
+            cargo test $testFilter --lib
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: 🧪 Test core Rust library
         if: matrix.label == 'ubuntu-22.04'

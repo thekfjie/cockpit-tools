@@ -841,8 +841,8 @@ pub(crate) fn normalize_experimental_model_definitions(
         if model.auto_compact_token_limit.is_some_and(|value| value <= 0) {
             return Err("EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_INVALID".to_string());
         }
-        // 统一口径：给了上下文窗口就必须带压缩阈值；调用方只给窗口时按 90% 派生，
-        // 但显式给出的阈值必须严格小于窗口。
+        // Preserve independent overrides. Missing values inherit global/source settings
+        // when the effective catalog is built, rather than becoming model overrides here.
         if let (Some(window), Some(compact)) =
             (model.context_window, model.auto_compact_token_limit)
         {
@@ -855,13 +855,7 @@ pub(crate) fn normalize_experimental_model_definitions(
             display_name: display_name.to_string(),
             reasoning_efforts: normalize_reasoning_efforts(model.reasoning_efforts.clone())?,
             context_window: model.context_window,
-            auto_compact_token_limit: model.context_window.map(|window| {
-                model
-                    .auto_compact_token_limit
-                    .unwrap_or_else(|| {
-                        crate::modules::codex_protocol::derived_auto_compact_token_limit(window)
-                    })
-            }),
+            auto_compact_token_limit: model.auto_compact_token_limit,
         });
     }
     Ok(normalized)

@@ -1027,10 +1027,14 @@
                 model_id: "custom-model".into(), display_name: "Custom".into(),
                 reasoning_efforts: None, context_window: window, auto_compact_token_limit: compact,
             };
-            assert!(super::normalize_experimental_model_definitions(vec![definition]).is_ok());
+            let normalized = super::normalize_experimental_model_definitions(vec![definition])
+                .expect("independent override");
+            assert_eq!(normalized[0].context_window, window);
+            assert_eq!(normalized[0].auto_compact_token_limit, compact);
         }
         for (window, compact, error) in [
             (Some(0), Some(1), "EXPERIMENTAL_MODEL_CATALOG_CONTEXT_WINDOW_INVALID"),
+            (Some(100), Some(0), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_INVALID"),
             (Some(100), Some(-1), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_INVALID"),
             (Some(100), Some(100), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_RANGE_INVALID"),
             (Some(100), Some(101), "EXPERIMENTAL_MODEL_CATALOG_AUTO_COMPACT_RANGE_INVALID"),
@@ -1042,7 +1046,7 @@
             assert_eq!(super::normalize_experimental_model_definitions(vec![definition]).unwrap_err(), error);
         }
 
-        // 统一口径：只给上下文窗口时按 90% 派生压缩阈值，不再视为非法配置。
+        // A missing compact override remains absent so the instance can supply it.
         let derived = super::normalize_experimental_model_definitions(vec![
             CodexExperimentalModelDefinition {
                 model_id: "custom-model".into(), display_name: "Custom".into(),
@@ -1050,9 +1054,9 @@
                 auto_compact_token_limit: None,
             },
         ])
-        .expect("context-only definition should derive the compact limit");
+        .expect("context-only definition should preserve inheritance");
         assert_eq!(derived[0].context_window, Some(516_000));
-        assert_eq!(derived[0].auto_compact_token_limit, Some(464_400));
+        assert_eq!(derived[0].auto_compact_token_limit, None);
     }
 
     #[test]
