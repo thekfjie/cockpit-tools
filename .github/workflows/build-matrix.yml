@@ -205,7 +205,7 @@ jobs:
           npm run build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Set-Location src-tauri
-          foreach ($testFilter in @('model_management_default_off_migration', 'model_context', 'source_metadata', 'auto_compact_limits', 'api_key_compaction', 'same_endpoint', 'model_provider_key')) {
+          foreach ($testFilter in @('model_management_default_off_migration', 'model_context', 'source_metadata', 'auto_compact_limits', 'api_key_compaction', 'same_endpoint', 'model_provider_key', 'official_app_server', 'model_list_refresh')) {
             cargo test $testFilter --lib
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
