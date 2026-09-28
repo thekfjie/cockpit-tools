@@ -198,17 +198,22 @@ jobs:
       - name: 🔄 Sync versions
         run: npm run sync-version
 
-      - name: 🧪 Test Windows model management
-        if: matrix.label == 'windows-latest'
-        shell: pwsh
+      - name: 🧪 Verify model management regressions
+        if: matrix.label == 'windows-latest' || matrix.label == 'ubuntu-22.04'
+        shell: bash
         run: |
+          set -euo pipefail
           npm run build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Set-Location src-tauri
-          foreach ($testFilter in @('model_management_default_off_migration', 'model_context', 'source_metadata', 'auto_compact_limits', 'api_key_compaction', 'same_endpoint', 'model_provider_key')) {
-            cargo test $testFilter --lib
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+          cd src-tauri
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            # The Tauri test executable exits before assertions on hosted Windows
+            # with STATUS_ENTRYPOINT_NOT_FOUND. Compile it here; run tests on Linux.
+            cargo test --lib --no-run
+          else
+            for test_filter in model_management_default_off_migration model_context source_metadata auto_compact_limits api_key_compaction same_endpoint model_provider_key; do
+              cargo test "$test_filter" --lib
+            done
+          fi
 
       - name: 🧪 Test core Rust library
         if: matrix.label == 'ubuntu-22.04'
