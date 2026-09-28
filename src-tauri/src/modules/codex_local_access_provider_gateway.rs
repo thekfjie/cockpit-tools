@@ -3457,18 +3457,6 @@ pub async fn ensure_provider_gateway_for_dir(
     }
     codex_account::reapply_experimental_model_policy_if_enabled(profile_dir)?;
     reapply_deepseek_profile_config_overrides(profile_dir, &account)?;
-    // 实例绑定的是没有 GPT 能力的供应商账号（例如 Grok）时，压缩同样只能走本地流程，
-    // 否则远端压缩会带着旧模型 ID 发出去，压缩结果与当前选择的模型无关。
-    if !collection_pool_provides_gpt_models(&collection)
-        && model_provider_key_compaction_mode(&account).as_deref() != Some("remote")
-        && crate::modules::codex_account::ensure_local_compaction_fallback_for_dir(profile_dir)?
-    {
-        logger::log_codex_api_info(&format!(
-            "[CodexLocalAccess][local-compaction] 供应商账号没有 GPT 能力，已为该 profile 启用本地压缩: profile={}, account_id={}",
-            profile_dir.display(),
-            account.id
-        ));
-    }
 
     let runtime_key = provider_gateway_runtime_key(profile_dir, account_id);
     if let Some(endpoint) = stop_provider_gateway_runtime(&runtime_key).await {

@@ -2697,27 +2697,6 @@ fn apply_api_key_compaction_for_dir(base_dir: &Path, account: &CodexAccount) -> 
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
     let mut doc = crate::modules::codex_config_format::read_codex_config_doc_from_str(&existing)
         .map_err(|error| format!("解析 config.toml 失败: {}", error))?;
-    let backup = serde_json::json!({
-        "remote_compaction_v2": doc.get("features").and_then(|item| item.as_table())
-            .and_then(|table| table.get("remote_compaction_v2")).and_then(|item| item.as_bool()),
-        "token_budget": doc.get("features").and_then(|item| item.as_table())
-            .and_then(|table| table.get("token_budget")).and_then(|item| item.as_bool()),
-    });
-    let backup_content = serde_json::to_string_pretty(&backup)
-        .map_err(|error| format!("序列化 API Key 压缩配置备份失败: {}", error))?;
-    write_string_atomic(&base_dir.join(API_KEY_COMPACTION_BACKUP_FILE), &backup_content)
-        .map_err(|error| format!("备份 API Key 压缩配置失败: {}", error))?;
-    if mode == "local" {
-        apply_local_compaction_fallback(&mut doc);
-    } else {
-        if doc.get("features").and_then(|item| item.as_table()).is_none() {
-            doc["features"] = toml_edit::table();
-        }
-        doc["features"]["remote_compaction_v2"] = toml_edit::value(true);
-        if let Some(table) = doc["features"].as_table_mut() {
-            table.remove("token_budget");
-        }
-    }
     let provider_id = doc.get("model_provider")
         .and_then(|item| item.as_str())
         .map(str::to_string);
