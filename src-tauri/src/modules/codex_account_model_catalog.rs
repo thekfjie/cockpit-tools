@@ -1522,16 +1522,7 @@ fn apply_experimental_model_catalog_to_doc(
         if managed_catalog_configured || policy_enabled {
             let previous_state = read_previous_experimental_catalog_state(base_dir);
             if managed_catalog_configured {
-                match previous_state.as_ref() {
-                    Some(state) if state.had_catalog_reference => {
-                        if let Some(previous_catalog) = state.catalog_reference.as_deref() {
-                            doc[CODEX_CONFIG_MODEL_CATALOG_JSON_KEY] = value(previous_catalog);
-                        }
-                    }
-                    _ => {
-                        let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
-                    }
-                }
+                let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
             }
             if let Some(state) = previous_state {
                 if state.had_model {
@@ -1998,7 +1989,7 @@ fn write_quick_config_to_config_toml_with_default_mode(
     }
 
     // Saved models remain available for a later explicit re-enable.
-    if let Some(models) = experimental_model_catalog_models {
+    if let Some(models) = experimental_model_catalog_models.filter(|_| !disabling_experimental_catalog) {
         persist_experimental_model_definitions(
             base_dir,
             crate::modules::codex_local_access::overlay_rendered_pool_models_on_experimental_catalog(
@@ -2602,9 +2593,7 @@ fn cleanup_experimental_model_catalog_for_dir(base_dir: &Path) -> Result<(), Str
 }
 
 fn account_model_management_enabled(base_dir: &Path) -> bool {
-    read_quick_config_from_config_toml(base_dir)
-        .map(|config| config.experimental_model_catalog_enabled)
-        .unwrap_or(false)
+    experimental_model_policy_enabled(base_dir)
 }
 
 fn account_syncs_model_catalog_to_codex(base_dir: &Path, account: &CodexAccount) -> bool {

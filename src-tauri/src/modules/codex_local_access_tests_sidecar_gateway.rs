@@ -437,9 +437,9 @@
                 .find(|model| model["slug"] == slug)
                 .and_then(|model| model["context_window"].as_i64())
         };
-        assert_eq!(window("gpt-6.1-sol"), Some(272000));
+        assert_eq!(window("gpt-6.1-sol"), Some(516_000));
         assert_eq!(window("gpt-5.6-sol"), Some(900_000));
-        assert_eq!(window("gpt-5.5"), Some(1048576));
+        assert_eq!(window("gpt-5.5"), Some(516_000));
         // 统一口径：显式写窗口时必须同时写 90% 的压缩阈值。
         let compact = |slug: &str| {
             parsed["models"]
@@ -450,8 +450,9 @@
                 .and_then(|model| model["auto_compact_token_limit"].as_i64())
         };
         assert_eq!(compact("gpt-5.6-sol"), Some(810_000));
-        // 官方 DeepSeek 壳位模型保留目录原值，不会被兜底窗口覆盖。
-        assert_eq!(compact("gpt-5.5"), None);
+        // Instance settings apply before source metadata when there is no Key override.
+        assert_eq!(compact("gpt-6.1-sol"), Some(464_400));
+        assert_eq!(compact("gpt-5.5"), Some(464_400));
     }
 
     #[test]

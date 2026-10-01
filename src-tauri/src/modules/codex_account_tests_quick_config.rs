@@ -934,8 +934,8 @@
         )
         .expect("write legacy global context config");
         let models = vec![CodexExperimentalModelDefinition {
-            model_id: "gpt-5.6-sol".to_string(),
-            display_name: "5.6 Sol".to_string(),
+            model_id: "gpt-6.1-sol".to_string(),
+            display_name: "6.1 Sol".to_string(),
             reasoning_efforts: None,
             context_window: None,
             auto_compact_token_limit: None,
@@ -961,10 +961,10 @@
         .expect("parse unified catalog");
         let model = catalog["models"]
             .as_array()
-            .and_then(|models| models.iter().find(|model| model["slug"] == "gpt-5.6-sol"))
+            .and_then(|models| models.iter().find(|model| model["slug"] == "gpt-6.1-sol"))
             .expect("find configured model");
         let official = crate::modules::codex_protocol::build_codex_client_models_response(&[
-            "gpt-5.6-sol".to_string(),
+            "gpt-6.1-sol".to_string(),
         ]);
         let official = &official["models"][0];
         assert_eq!(model["context_window"], official["context_window"]);
@@ -1424,7 +1424,7 @@
             .expect("enable experimental catalog");
         write_quick_config_to_config_toml(&base_dir, None, None, Some(false), None)
             .expect("disable experimental catalog");
-        // Simulate a stale file left by an older build; account switching must clean it too.
+        // Saved definitions remain available while the generated catalog stays disabled.
         fs::write(
             base_dir.join(super::CODEX_EXPERIMENTAL_MODEL_CONFIG_FILE),
             r#"{"version":4,"models":[{"model_id":"gpt-6-astra","display_name":"6 Astra"}]}"#,
@@ -1454,7 +1454,7 @@
         assert!(!base_dir
             .join(super::CODEX_EXPERIMENTAL_MODEL_POLICY_FILE)
             .exists());
-        assert!(!base_dir
+        assert!(base_dir
             .join(super::CODEX_EXPERIMENTAL_MODEL_CONFIG_FILE)
             .exists());
 
@@ -1673,7 +1673,7 @@
         assert!(!base_dir
             .join(super::CODEX_EXPERIMENTAL_MODEL_POLICY_FILE)
             .exists());
-        assert!(!base_dir
+        assert!(base_dir
             .join(super::CODEX_EXPERIMENTAL_MODEL_CONFIG_FILE)
             .exists());
         assert!(!base_dir
@@ -1690,6 +1690,8 @@
             .expect("write config");
         write_quick_config_to_config_toml(&base_dir, None, None, Some(true), None)
             .expect("enable catalog");
+        let saved = fs::read(base_dir.join(super::CODEX_EXPERIMENTAL_MODEL_CONFIG_FILE))
+            .expect("read saved definitions");
 
         let invalid_draft = vec![CodexExperimentalModelDefinition {
             model_id: "bad model id".to_string(),
@@ -1717,9 +1719,7 @@
         assert!(!base_dir
             .join(super::CODEX_EXPERIMENTAL_MODEL_POLICY_FILE)
             .exists());
-        assert!(!base_dir
-            .join(super::CODEX_EXPERIMENTAL_MODEL_CONFIG_FILE)
-            .exists());
+        assert_eq!(fs::read(base_dir.join(super::CODEX_EXPERIMENTAL_MODEL_CONFIG_FILE)).unwrap(), saved);
         assert!(!base_dir
             .join(super::CODEX_EXPERIMENTAL_MODEL_PREVIOUS_CATALOG_FILE)
             .exists());

@@ -1932,6 +1932,7 @@ supports_websockets = false
     #[test]
     fn responses_api_key_bundle_syncs_saved_model_catalog_when_enabled() {
         let base_dir = make_temp_dir("codex-api-key-managed-model-catalog-test");
+        super::persist_experimental_model_policy(&base_dir, true).unwrap();
         fs::write(base_dir.join("config.toml"), "model = \"legacy-model\"\n")
             .expect("write stale selected model");
         let mut account = CodexAccount::new_api_key(
@@ -1994,6 +1995,7 @@ supports_websockets = false
     #[test]
     fn responses_api_key_bundle_defaults_missing_wire_api_to_http_only_provider() {
         let base_dir = make_temp_dir("codex-api-key-default-wire-api-http-only-test");
+        super::persist_experimental_model_policy(&base_dir, true).unwrap();
         let mut account = CodexAccount::new_api_key(
             "custom-api-key".to_string(),
             "custom@example.com".to_string(),
@@ -2026,6 +2028,7 @@ supports_websockets = false
     #[test]
     fn responses_api_key_bundle_replaces_stale_local_access_catalog() {
         let base_dir = make_temp_dir("codex-api-key-replace-local-access-catalog-test");
+        super::persist_experimental_model_policy(&base_dir, true).unwrap();
         fs::write(
             base_dir.join("config.toml"),
             r#"model_catalog_json = "cockpit-local-access-model-catalog.json"
@@ -2104,6 +2107,7 @@ supports_websockets = false
         assert!(updated.api_sync_model_catalog_to_codex);
 
         let profile_dir = env.home_dir.join("instance-profile");
+        super::persist_experimental_model_policy(&profile_dir, true).unwrap();
         write_account_bundle_to_dir(&profile_dir, &updated)
             .expect("write multi-instance account projection");
         let config = fs::read_to_string(profile_dir.join("config.toml")).expect("read config");
