@@ -597,6 +597,21 @@ fn restore_config_toml_from_takeover_backup(
             .as_ref()
             .and_then(|doc| doc.get("model_provider"))
         {
+            if let Some(provider_id) = model_provider.as_str() {
+                if let Some(definition) = backup_doc.as_ref()
+                    .and_then(|doc| doc.get("model_providers"))
+                    .and_then(|providers| providers.get(provider_id))
+                {
+                    if current_doc.get("model_providers").is_none() {
+                        current_doc["model_providers"] = toml_edit::table();
+                    }
+                    let providers = current_doc["model_providers"].as_table_mut()
+                        .ok_or("config.toml 中 model_providers 不是合法表结构")?;
+                    if !providers.contains_key(provider_id) {
+                        providers[provider_id] = definition.clone();
+                    }
+                }
+            }
             current_doc["model_provider"] = model_provider.clone();
         }
     }
