@@ -598,9 +598,11 @@ fn preferred_provider_gateway_slot<'a>(
     account: &CodexAccount,
     slots: &'a [ProviderGatewayModelSlot],
 ) -> Option<&'a ProviderGatewayModelSlot> {
-    let startup = account
+    let key_default = model_provider_key_config_for_account(account)
+        .and_then(|key| key.get("defaultModelId").and_then(Value::as_str).map(str::to_string));
+    let startup = key_default.as_deref().or(account
         .api_startup_model
-        .as_deref()
+        .as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(startup) = startup {
@@ -937,6 +939,23 @@ pub(crate) fn decorate_account_catalog_context_windows(
     let key_config = model_provider_key_config_for_account(account);
     let mut source_catalog: Value = serde_json::from_str(catalog_json)
         .map_err(|error| format!("解析账号模型目录失败: {}", error))?;
+    if let (Some(models), Some(definitions)) = (
+        source_catalog.get_mut("models").and_then(Value::as_array_mut),
+        key_config.as_ref().and_then(|key| key.get("modelDefinitions")).and_then(Value::as_array),
+    ) {
+        for model in models {
+            let slug = model.get("slug").and_then(Value::as_str).unwrap_or_default();
+            let upstream = slots.iter().find(|slot| slot.client_model.eq_ignore_ascii_case(slug))
+                .map(|slot| slot.upstream_model.as_str()).unwrap_or(slug);
+            let display = definitions.iter().find(|definition| definition.get("model_id")
+                .and_then(Value::as_str).is_some_and(|id| id.eq_ignore_ascii_case(upstream)))
+                .and_then(|definition| definition.get("display_name")).and_then(Value::as_str)
+                .map(str::trim).filter(|name| !name.is_empty()).map(str::to_string);
+            if let (Some(display), Some(object)) = (display, model.as_object_mut()) {
+                object.insert("display_name".to_string(), json!(display));
+            }
+        }
+    }
     if let (Some(models), Some(metadata)) = (
         source_catalog.get_mut("models").and_then(Value::as_array_mut),
         key_config.as_ref().and_then(|key| key.pointer("/modelSource/modelMetadata")).and_then(Value::as_object),
@@ -2650,6 +2669,45 @@ fn write_provider_gateway_model_catalog(
     write_provider_gateway_model_catalog_with_templates(profile_dir, slots, None, None)
 }
 
+/// Shared by activation and launch so tests exercise the actual final write order.
+pub(crate) fn finalize_provider_gateway_catalog_for_account(
+    profile_dir: &Path,
+    account: &CodexAccount,
+) -> Result<(), String> {
+    let gateway = provider_gateway_for_account(account)?;
+    let slots = provider_gateway_model_slots(&gateway.upstream_models);
+    if let Some(default) = preferred_provider_gateway_slot(account, &slots) {
+        write_local_access_profile_model_override(profile_dir, &default.client_model)?;
+    }
+    write_provider_gateway_model_catalog_with_templates(
+        profile_dir, &slots, official_catalog_json_for_provider_gateway(account)?.as_deref(), Some(account),
+    )?;
+    codex_account::reapply_experimental_model_policy_if_enabled(profile_dir)?;
+    Ok(())
+}
+
+/// Build the catalog from the owning credential, independently of the instance picker.
+pub(crate) fn build_provider_gateway_catalog_for_account(
+    account: &CodexAccount,
+    default_window: Option<i64>,
+    default_limit: Option<i64>,
+) -> Result<(String, Vec<String>, Option<String>), String> {
+    let gateway = provider_gateway_for_account(account)?;
+    let slots = provider_gateway_model_slots(&gateway.upstream_models);
+    let template = official_catalog_json_for_provider_gateway(account)?;
+    let raw = match template.as_deref() {
+        Some(template) => build_official_template_mapped_catalog_json(&slots, template)?,
+        None => build_provider_model_catalog_json(&slots)?,
+    };
+    let content = decorate_account_catalog_context_windows(
+        &raw, &slots, account, default_window, default_limit,
+    )?;
+    let default_model = preferred_provider_gateway_slot(account, &slots)
+        .map(|slot| slot.client_model.clone());
+    let models = slots.into_iter().map(|slot| slot.client_model).collect();
+    Ok((content, models, default_model))
+}
+
 fn write_provider_gateway_model_catalog_with_templates(
     profile_dir: &Path,
     slots: &[ProviderGatewayModelSlot],
@@ -2669,12 +2727,22 @@ fn write_provider_gateway_model_catalog_with_templates(
     } else {
         decorate_catalog_context_windows(&raw, slots, &HashMap::new(), default_window)?
     };
-    let content = codex_account::decorate_managed_model_catalog_for_profile(profile_dir, &content)?;
+    let content = if account.is_some_and(CodexAccount::is_api_key_auth) {
+        // Key settings were resolved above. Instance model definitions may describe
+        // another credential and must never overwrite their values or identities.
+        content
+    } else {
+        codex_account::decorate_managed_model_catalog_for_profile(profile_dir, &content)?
+    };
     write_string_atomic(
         &profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
         &content,
     )
     .map_err(|e| format!("写入 Codex 模型目录失败: {}", e))?;
+    crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta_for_gateway(
+        &profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
+        account.filter(|account| account.is_api_key_auth()).map(|account| account.id.as_str()),
+    )?;
     codex_account::cleanup_legacy_managed_model_catalogs(profile_dir);
     invalidate_codex_model_cache(profile_dir)?;
 
@@ -2903,18 +2971,7 @@ pub async fn activate_provider_gateway_for_dir(
             .map(|slot| slot.client_model.clone())
             .collect::<Vec<_>>(),
     )?;
-    if let Some(default_slot) = preferred_provider_gateway_slot(&account, &model_slots) {
-        write_local_access_profile_model_override(profile_dir, &default_slot.client_model)?;
-    }
-    if !model_slots.is_empty() {
-        write_provider_gateway_model_catalog_with_templates(
-            profile_dir,
-            &model_slots,
-            official_catalog_json_for_provider_gateway(&account)?.as_deref(),
-            Some(&account),
-        )?;
-    }
-    codex_account::reapply_experimental_model_policy_if_enabled(profile_dir)?;
+    finalize_provider_gateway_catalog_for_account(profile_dir, &account)?;
     reapply_deepseek_profile_config_overrides(profile_dir, &account)?;
     ensure_runtime_loaded_without_start().await?;
     let runtime = gateway_runtime().lock().await;
@@ -3446,18 +3503,7 @@ pub async fn ensure_provider_gateway_for_dir(
             .map(|slot| slot.client_model.clone())
             .collect::<Vec<_>>(),
     )?;
-    if let Some(default_slot) = preferred_provider_gateway_slot(&account, &model_slots) {
-        write_local_access_profile_model_override(profile_dir, &default_slot.client_model)?;
-    }
-    if !model_slots.is_empty() {
-        write_provider_gateway_model_catalog_with_templates(
-            profile_dir,
-            &model_slots,
-            official_catalog_json_for_provider_gateway(&account)?.as_deref(),
-            Some(&account),
-        )?;
-    }
-    codex_account::reapply_experimental_model_policy_if_enabled(profile_dir)?;
+    finalize_provider_gateway_catalog_for_account(profile_dir, &account)?;
     reapply_deepseek_profile_config_overrides(profile_dir, &account)?;
 
     let runtime_key = provider_gateway_runtime_key(profile_dir, account_id);

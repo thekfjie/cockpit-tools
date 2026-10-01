@@ -3505,9 +3505,9 @@ export function useCodexAccountsAccessController(context: CodexAccountsAccessCon
         setEditingApiKeyCredentialsId(account.id);
         setEditingApiWireApi(resolveCodexProviderCapabilityProfile({
           baseUrl: canonicalBaseUrl,
-          wireApi: effective?.wireApi ?? account.api_wire_api,
+          wireApi: matchedProvider?.wireApi ?? account.api_wire_api,
         }).wireApi);
-        setEditingApiSupportsWebsockets(effective?.supportsWebsockets ?? account.api_supports_websockets === true);
+        setEditingApiSupportsWebsockets(matchedProvider?.supportsWebsockets ?? account.api_supports_websockets === true);
         setEditingApiCredentialsError(null);
         setEditingApiKeyCredentialsValue(canonicalApiKey);
         setEditingApiKeyCredentialsVisible(false);

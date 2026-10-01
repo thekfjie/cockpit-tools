@@ -1456,6 +1456,32 @@ fn inspect_experimental_model_catalog(
     })
 }
 
+fn gateway_catalog_owner_for_doc(base_dir: &Path, doc: &Document) -> Option<String> {
+    if doc.get(CODEX_CONFIG_MODEL_PROVIDER_KEY).and_then(|item| item.as_str())
+        != Some(CODEX_RUNTIME_MODEL_PROVIDER_ID) { return None; }
+    let reference = doc.get(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY)?.as_str()?;
+    if !catalog_ref_targets_cockpit_managed_file(reference, base_dir) { return None; }
+    crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(
+        &base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE),
+    )
+}
+
+fn gateway_catalog_for_doc(
+    base_dir: &Path,
+    doc: &Document,
+) -> Result<Option<(String, Vec<String>, Option<String>, String)>, String> {
+    let Some(account_id) = gateway_catalog_owner_for_doc(base_dir, doc) else { return Ok(None); };
+    let account = load_account(&account_id).filter(CodexAccount::is_api_key_auth)
+        .ok_or_else(|| format!("模型目录关联的 API 账号 {} 已不存在，请重新选择账号", account_id))?;
+    let window = doc.get(CODEX_CONFIG_MODEL_CONTEXT_WINDOW_KEY).and_then(|item| item.as_integer());
+    let limit = doc.get(CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT_KEY).and_then(|item| item.as_integer());
+    let (content, models, default_model) =
+        crate::modules::codex_local_access::build_provider_gateway_catalog_for_account(
+            &account, window, limit,
+        )?;
+    Ok(Some((content, models, default_model, account_id)))
+}
+
 fn apply_experimental_model_catalog_to_doc(
     base_dir: &Path,
     doc: &mut Document,
@@ -1464,6 +1490,22 @@ fn apply_experimental_model_catalog_to_doc(
     let Some(enabled) = enabled else {
         return Ok(false);
     };
+    if let Some((content, models, default_model, account_id)) = gateway_catalog_for_doc(base_dir, doc)? {
+        // The instance switch controls user management. The gateway still needs its
+        // own compatibility catalog, whose identities and defaults belong to the Key.
+        let selected = doc.get("model").and_then(|item| item.as_str());
+        if !selected.is_some_and(|selected| models.iter().any(|id| id.eq_ignore_ascii_case(selected))) {
+            if let Some(default_model) = default_model { doc["model"] = value(default_model); }
+        }
+        let path = base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE);
+        write_string_atomic(&path, &content)?;
+        crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta_for_gateway(
+            &path, Some(&account_id),
+        )?;
+        crate::modules::codex_local_access::invalidate_codex_model_cache(base_dir)?;
+        doc[CODEX_CONFIG_MODEL_CATALOG_JSON_KEY] = value(CODEX_MANAGED_MODEL_CATALOG_FILE);
+        return Ok(false);
+    }
     let configured_catalog = doc
         .get(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY)
         .and_then(|item| item.as_str())
@@ -1941,7 +1983,8 @@ fn write_quick_config_to_config_toml_with_default_mode(
 
     let effective_experimental_enabled = experimental_model_catalog_enabled
         .or_else(|| experimental_model_policy_enabled(base_dir).then_some(true));
-    if effective_experimental_enabled == Some(true) {
+    let preserve_gateway_catalog = gateway_catalog_owner_for_doc(base_dir, &doc).is_some();
+    if effective_experimental_enabled == Some(true) && !preserve_gateway_catalog {
         let candidates = experimental_model_catalog_models.as_ref()
             .cloned()
             .unwrap_or_else(|| read_experimental_model_definitions(base_dir));
@@ -1991,8 +2034,9 @@ fn write_quick_config_to_config_toml_with_default_mode(
         persist_experimental_model_policy(base_dir, enabled)?;
     }
 
-    let remove_managed_catalog_after_write = remove_experimental_catalog_after_write
-        || (disabling_experimental_catalog && had_experimental_model_control_state);
+    let remove_managed_catalog_after_write = !preserve_gateway_catalog
+        && (remove_experimental_catalog_after_write
+            || (disabling_experimental_catalog && had_experimental_model_control_state));
     if remove_managed_catalog_after_write {
         crate::modules::atomic_write::remove_file_locked(&experimental_model_catalog_path(base_dir))
             .map_err(|error| {
@@ -2517,7 +2561,13 @@ fn cleanup_experimental_model_catalog_for_dir(base_dir: &Path) -> Result<(), Str
                 .and_then(|item| item.as_str())
                 .is_some_and(|catalog| catalog_ref_targets_cockpit_managed_file(catalog, base_dir));
             if uses_experimental_catalog {
-                apply_experimental_model_catalog_to_doc(base_dir, &mut doc, Some(false))?;
+                if gateway_catalog_owner_for_doc(base_dir, &doc).is_some() {
+                    // Account switching removes this gateway catalog. Do not rebuild
+                    // the old Key here, which may be removed or have invalid settings.
+                    let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
+                } else {
+                    apply_experimental_model_catalog_to_doc(base_dir, &mut doc, Some(false))?;
+                }
                 if !experimental_model_policy_enabled(base_dir) {
                     let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
                 }
@@ -2949,8 +2999,29 @@ fn rebuild_managed_catalog_from_existing(catalog_path: &Path) -> Result<(), Stri
     if model_ids.is_empty() {
         return Err("现有模型目录没有可重建的模型条目".to_string());
     }
-    let mut rebuilt =
-        crate::modules::codex_protocol::build_codex_client_models_response(&model_ids);
+    let base_dir = catalog_path.parent().ok_or("模型目录缺少实例路径")?;
+    let config_path = get_config_toml_path(base_dir);
+    let mut doc = if config_path.is_file() {
+        crate::modules::codex_config_format::load_codex_config_doc(&config_path)?
+    } else { Document::new() };
+    if let Some((content, models, default_model, account_id)) = gateway_catalog_for_doc(base_dir, &doc)? {
+        if !doc.get("model").and_then(|item| item.as_str())
+            .is_some_and(|selected| models.iter().any(|id| id.eq_ignore_ascii_case(selected))) {
+            if let Some(default_model) = default_model { doc["model"] = value(default_model); }
+            let config = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
+            crate::modules::codex_config_format::write_codex_config_toml_atomic(&config_path, &config)?;
+        }
+        write_string_atomic(catalog_path, &content)?;
+        return crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta_for_gateway(
+            catalog_path, Some(&account_id),
+        );
+    }
+    let mut rebuilt = if experimental_model_policy_enabled(base_dir) {
+        build_experimental_model_catalog(base_dir, &doc)
+            .and_then(|content| serde_json::from_str(&content).map_err(|error| error.to_string()))?
+    } else {
+        crate::modules::codex_protocol::build_codex_client_models_response(&model_ids)
+    };
     if let Some(new_models) = rebuilt.get_mut("models").and_then(JsonValue::as_array_mut) {
         for model in new_models.iter_mut() {
             let Some(slug) = model.get("slug").and_then(JsonValue::as_str).map(str::to_string)
@@ -2966,6 +3037,15 @@ fn rebuild_managed_catalog_from_existing(catalog_path: &Path) -> Result<(), Stri
             for field in ["display_name", "description"] {
                 if let Some(value) = old.get(field).filter(|value| value.is_string()) {
                     model[field] = value.clone();
+                }
+            }
+            if !experimental_model_policy_enabled(base_dir) {
+                // Legacy compatibility catalogs have no editable source record.
+                // Keep their explicit limits while refreshing template capabilities.
+                for field in ["context_window", "max_context_window", "auto_compact_token_limit"] {
+                    if let Some(value) = old.get(field).filter(|value| value.as_i64().is_some_and(|v| v > 0)) {
+                        model[field] = value.clone();
+                    }
                 }
             }
         }

@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { buildCodexModelRoutingValue, resolveRoutingCatalog } from "../../utils/codexModelRoutingValue.ts";
+import { validateEffectiveModelContexts } from "../../utils/codexModelContext.ts";
 import { deferred, settlePromises } from "../../../tests/helpers/reactHookHarness";
 
 // Exercise the production callbacks with controlled IPC completion order. This
@@ -49,6 +50,11 @@ function harness(routing = false, overlay = "global-progress-overlay") {
     busy: false, checkingConfig: false, configReady: true, configBusy: false, contextConfigSaving: false,
     loadedConfig: {}, loadedInstanceKey: null, configLoadInputs: { current: { selectedInstance: store.instances[0] } },
     catalogEnabled: false, modelsError: null, models: [], defaultModelId: null, modelSourceInfo: null,
+    modelKeyProvider: null, modelKeyId: null,
+    setModelKeyProvider: (value: any) => { c.modelKeyProvider = value; },
+    setModelKeyId: (value: any) => { c.modelKeyId = value; },
+    setModelSourceInfo: (value: any) => { c.modelSourceInfo = value; },
+    validateEffectiveModelContexts,
     routingEnabled: false, routingEnabledForSave: false, routingDirty: routing,
     nextModelRouting: { enabled: false, routes: [] }, mixedRoutingBindAccountId: undefined,
     normalizedRoutingRoutes: [], routingRoutes: [], dirty: true, contextWindowInput: "", compactLimitInput: "",

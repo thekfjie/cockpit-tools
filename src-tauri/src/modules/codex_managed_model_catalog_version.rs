@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 /// 3：上下文与压缩统一为 90% 口径（压缩阈值不再留空），GPT-6 系列上下文修正为 256K。
 /// 4：加入 GPT-6.1 Sol 客户端目录。
 /// 5：删除退役型号的内置模板与兼容槽位。
-pub(crate) const MANAGED_MODEL_CATALOG_GENERATOR_VERSION: u32 = 5;
+/// 6：按目录所属 API Key 重建，保留有效上下文与默认模型。
+pub(crate) const MANAGED_MODEL_CATALOG_GENERATOR_VERSION: u32 = 6;
 
 const META_FILE_NAME: &str = "cockpit-model-catalog.meta.json";
 
@@ -28,6 +29,8 @@ struct ManagedModelCatalogMeta {
     catalog_hash: String,
     #[serde(rename = "writtenAt")]
     written_at_ms: i64,
+    #[serde(default, rename = "gatewayAccountId", skip_serializing_if = "Option::is_none")]
+    gateway_account_id: Option<String>,
 }
 
 pub(crate) fn managed_catalog_meta_path(catalog_path: &Path) -> PathBuf {
@@ -42,6 +45,20 @@ fn managed_catalog_hash(content: &str) -> String {
 
 /// catalog 写入成功后刷新版本戳；失败只影响版本判断，不影响目录本身。
 pub(crate) fn write_managed_catalog_meta(catalog_path: &Path) -> Result<(), String> {
+    write_managed_catalog_meta_for_gateway(catalog_path, None)
+}
+
+pub(crate) fn managed_catalog_gateway_account_id(catalog_path: &Path) -> Option<String> {
+    if !catalog_path.is_file() { return None; }
+    let content = fs::read_to_string(managed_catalog_meta_path(catalog_path)).ok()?;
+    serde_json::from_str::<ManagedModelCatalogMeta>(&content).ok()?
+        .gateway_account_id.filter(|id| !id.trim().is_empty())
+}
+
+pub(crate) fn write_managed_catalog_meta_for_gateway(
+    catalog_path: &Path,
+    account_id: Option<&str>,
+) -> Result<(), String> {
     let content = fs::read_to_string(catalog_path).map_err(|e| {
         format!(
             "读取模型目录以写入版本戳失败: path={}, error={}",
@@ -54,6 +71,7 @@ pub(crate) fn write_managed_catalog_meta(catalog_path: &Path) -> Result<(), Stri
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         catalog_hash: managed_catalog_hash(&content),
         written_at_ms: chrono::Utc::now().timestamp_millis(),
+        gateway_account_id: account_id.map(str::to_string),
     };
     let serialized = serde_json::to_string_pretty(&meta)
         .map_err(|e| format!("序列化模型目录版本戳失败: {}", e))?;

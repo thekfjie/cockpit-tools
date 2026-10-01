@@ -1507,7 +1507,7 @@
     }
 
     #[test]
-    fn provider_gateway_final_catalog_write_reapplies_experimental_policy() {
+    fn subscription_catalog_reapply_without_gateway_owner_uses_instance_models() {
         let base_dir = make_temp_dir("codex-experimental-provider-final-write-test");
         fs::write(base_dir.join("config.toml"), "model = \"gpt-5.6-sol\"\n").expect("write config");
         write_quick_config_to_config_toml(&base_dir, None, None, Some(true), None)
@@ -1516,12 +1516,12 @@
             base_dir.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE),
             r#"{"models":[{"slug":"provider-model"}]}"#,
         )
-        .expect("simulate provider gateway catalog write");
+        .expect("replace subscription catalog");
         fs::write(
             base_dir.join("config.toml"),
             "model_catalog_json = \"cockpit-provider-model-catalog.json\"\nmodel = \"provider-model\"\n",
         )
-        .expect("simulate provider gateway config write");
+        .expect("replace unowned catalog reference");
 
         assert!(
             super::reapply_experimental_model_policy_if_enabled(&base_dir)
@@ -1541,6 +1541,116 @@
         assert!(catalog.contains(&first_model));
 
         fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn owned_gateway_catalog_survives_management_restart_and_key_switch() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let env = TestEnvGuard::new("owned-gateway-catalog");
+        let base_dir = env.codex_home();
+        let data_dir = crate::modules::account::get_data_dir().unwrap();
+        let providers = serde_json::json!([{
+            "id": "shared-endpoint", "baseUrl": "https://relay.example/v1",
+            "apiKeys": [
+                {"apiKey": "key-third", "modelCatalog": ["kimi-k3-1", "glm-5.3"],
+                 "defaultModelId": "glm-5.3", "compactionMode": "local",
+                 "modelContextWindows": {"kimi-k3-1": 300000, "glm-5.3": 256000},
+                 "modelAutoCompactTokenLimits": {"kimi-k3-1": 276000, "glm-5.3": 230000},
+                 "modelDefinitions": [{"model_id": "kimi-k3-1", "display_name": "Key Kimi"},
+                                      {"model_id": "glm-5.3", "display_name": "Key GLM"}]},
+                {"apiKey": "key-oai", "modelCatalog": ["gpt-6.1-sol"],
+                 "defaultModelId": "gpt-6.1-sol", "compactionMode": "remote",
+                 "modelContextWindows": {"gpt-6.1-sol": 300000},
+                 "modelAutoCompactTokenLimits": {"gpt-6.1-sol": 276000}}
+            ]
+        }]);
+        fs::write(data_dir.join("codex_model_providers.json"), providers.to_string()).unwrap();
+        for (id, key) in [("third", "key-third"), ("oai", "key-oai")] {
+            let account = CodexAccount::new_api_key(id.into(), format!("{}@example.com", id), key.into(),
+                CodexApiProviderMode::Custom, Some("https://relay.example/v1".into()),
+                Some("shared-endpoint".into()), Some("Relay".into()), Vec::new());
+            super::save_account(&account).unwrap();
+        }
+        let third = super::load_account("third").unwrap();
+        let oai = super::load_account("oai").unwrap();
+        fs::write(base_dir.join("config.toml"),
+            "model_provider = \"codex_local_access\"\nmodel = \"gpt-6-luna\"\n").unwrap();
+        write_quick_config_to_config_toml(&base_dir, Some(1_000_000), Some(900_000), Some(true), None).unwrap();
+        crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &third).unwrap();
+        let catalog_path = base_dir.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE);
+        let assert_third = || {
+            let catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
+            let models = catalog["models"].as_array().unwrap();
+            let visible: Vec<_> = models.iter().filter(|model| model["slug"] != "codex-auto-review").collect();
+            assert_eq!(visible.len(), 2, "instance GPT models must not enter the Key catalog");
+            let kimi = visible.iter().find(|model| model["display_name"] == "Key Kimi").unwrap();
+            let glm = visible.iter().find(|model| model["display_name"] == "Key GLM").unwrap();
+            assert_eq!(kimi["context_window"], 300000);
+            assert_eq!(kimi["auto_compact_token_limit"], 276000);
+            assert_eq!(glm["context_window"], 256000);
+            assert_eq!(glm["auto_compact_token_limit"], 230000);
+            let config = crate::modules::codex_config_format::load_codex_config_doc(&base_dir.join("config.toml")).unwrap();
+            assert_eq!(config["model"].as_str(), glm["slug"].as_str());
+        };
+        assert_third();
+        let other = env.home_dir.join("other-profile");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("config.toml"), "model_provider = \"codex_local_access\"\n").unwrap();
+        crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&other, &oai).unwrap();
+        let other_before = fs::read(other.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)).unwrap();
+        for enabled in [false, true] {
+            write_quick_config_to_config_toml(&base_dir, Some(1_000_000), Some(900_000), Some(enabled), None).unwrap();
+            assert_eq!(super::experimental_model_policy_enabled(&base_dir), enabled);
+            assert_third();
+            // A stale generator stamp forces the same path used during app startup.
+            let meta_path = crate::modules::codex_managed_model_catalog_version::managed_catalog_meta_path(&catalog_path);
+            let mut meta: serde_json::Value = serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+            meta["generator"] = serde_json::json!(0);
+            fs::write(&meta_path, meta.to_string()).unwrap();
+            super::rebuild_managed_catalog_from_existing(&catalog_path).unwrap();
+            assert_third();
+        }
+        assert_eq!(fs::read(other.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)).unwrap(), other_before);
+        crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &oai).unwrap();
+        let oai_catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        assert!(!oai_catalog["models"].as_array().unwrap().iter().any(|model| model["display_name"] == "Key Kimi"));
+        assert_eq!(crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&catalog_path).as_deref(), Some("oai"));
+        crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &third).unwrap();
+        assert_third();
+        let before = fs::read(base_dir.join("config.toml")).unwrap();
+        let mut conflicting = providers;
+        conflicting[0]["apiKeys"][0]["modelAutoCompactTokenLimits"].as_object_mut().unwrap().remove("glm-5.3");
+        fs::write(data_dir.join("codex_model_providers.json"), conflicting.to_string()).unwrap();
+        let error = write_quick_config_to_config_toml(&base_dir, Some(1_000_000), Some(900_000), Some(true), None).unwrap_err();
+        assert!(error.contains("glm") || error.contains("阈值"), "{}", error);
+        assert_eq!(fs::read(base_dir.join("config.toml")).unwrap(), before, "invalid limits must not change config");
+        super::cleanup_experimental_model_catalog_for_dir(&base_dir).unwrap();
+        crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &oai).unwrap();
+        assert_eq!(crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&catalog_path).as_deref(), Some("oai"));
+    }
+
+    #[test]
+    fn startup_catalog_rebuild_preserves_instance_and_legacy_limits() {
+        let base_dir = make_temp_dir("startup-instance-limits");
+        fs::write(base_dir.join("config.toml"), "model_context_window = 300000\nmodel_auto_compact_token_limit = 276000\n").unwrap();
+        super::save_model_catalog_for_base_dir_preserving_context(&base_dir, true,
+            vec![CodexExperimentalModelDefinition { model_id: "gpt-6.1-sol".into(), display_name: "My Sol".into(),
+                reasoning_efforts: None, context_window: None, auto_compact_token_limit: None }], None).unwrap();
+        let path = base_dir.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE);
+        fs::write(&path, r#"{"models":[{"slug":"gpt-6.1-sol","display_name":"My Sol","context_window":1050000}]}"#).unwrap();
+        super::rebuild_managed_catalog_from_existing(&path).unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let sol = catalog["models"].as_array().unwrap().iter().find(|model| model["slug"] == "gpt-6.1-sol").unwrap();
+        assert_eq!(sol["context_window"], 300000);
+        assert_eq!(sol["max_context_window"], 300000);
+        assert_eq!(sol["auto_compact_token_limit"], 276000);
+        super::persist_experimental_model_policy(&base_dir, false).unwrap();
+        fs::write(&path, r#"{"models":[{"slug":"custom-model","display_name":"Legacy Key","context_window":256000,"max_context_window":256000,"auto_compact_token_limit":230000}]}"#).unwrap();
+        super::rebuild_managed_catalog_from_existing(&path).unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(catalog["models"][0]["context_window"], 256000);
+        assert_eq!(catalog["models"][0]["auto_compact_token_limit"], 230000);
+        fs::remove_dir_all(base_dir).unwrap();
     }
 
     #[test]
