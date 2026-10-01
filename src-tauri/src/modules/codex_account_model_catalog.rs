@@ -1173,10 +1173,16 @@ fn apply_model_context_config_to_catalog(
         if let Some(object) = catalog_model.as_object_mut() {
             if let Some(context_window) = context_window {
                 object.insert("context_window".to_string(), serde_json::json!(context_window));
-                object.insert(
-                    "max_context_window".to_string(),
-                    serde_json::json!(context_window),
-                );
+                if definition.and_then(|model| model.context_window)
+                    .or(global_context_window)
+                    .or(metadata.and_then(|item| item.context_window))
+                    .is_some_and(|value| value > 0)
+                {
+                    object.insert(
+                        "max_context_window".to_string(),
+                        serde_json::json!(context_window),
+                    );
+                }
             }
             if let Some(auto_compact_token_limit) = auto_compact_token_limit {
                 object.insert(
