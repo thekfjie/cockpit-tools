@@ -967,7 +967,10 @@
             "gpt-6.1-sol".to_string(),
         ]);
         let official = &official["models"][0];
-        assert_eq!(model["context_window"], official["context_window"]);
+        assert_eq!(model["context_window"], official["context_window"],
+            "saved={}, resolved={:?}, generated_limits={}/{}/{}", saved_models,
+            super::read_experimental_model_definitions(&base_dir),
+            model["context_window"], model["max_context_window"], model["auto_compact_token_limit"]);
         assert_eq!(model["max_context_window"], official["max_context_window"]);
         assert_eq!(
             model["auto_compact_token_limit"],

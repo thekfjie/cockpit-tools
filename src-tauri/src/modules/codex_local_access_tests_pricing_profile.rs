@@ -1881,7 +1881,10 @@ supports_websockets = false
         let restored = fs::read_to_string(profile_dir.join(CODEX_PROFILE_CONFIG_FILE)).unwrap();
         assert!(restored.contains("model_provider = \"previous\""));
         assert!(restored.contains("https://relay.example/v1"));
-        assert!(!restored.contains("http://localhost:64861/v1"));
+        let doc = crate::modules::codex_config_format::read_codex_config_doc_from_str(&restored).unwrap();
+        assert_eq!(doc["model_providers"]["previous"]["base_url"].as_str(), Some("https://relay.example/v1"));
+        // Inactive gateway definitions remain available for historical threads.
+        assert!(doc["model_providers"]["codex_local_access"].get("experimental_bearer_token").is_none());
         assert!(super::load_takeover_backups().unwrap().profiles.is_empty());
         fs::remove_dir_all(profile_dir).unwrap();
     }
