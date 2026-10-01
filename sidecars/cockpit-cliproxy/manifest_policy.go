@@ -40,13 +40,14 @@ import (
 type contextKey string
 
 const (
-	clientAPIKeyContextKey     contextKey = "cockpitClientAPIKey"
-	requestKindContextKey      contextKey = "cockpitRequestKind"
-	requestModelContextKey     contextKey = "cockpitRequestModel"
-	clientInstanceIDContextKey contextKey = "cockpitClientInstanceId"
-	targetAccountIDContextKey  contextKey = "cockpitTargetAccountId"
-	clientInstanceIDHeaderName            = "X-Cockpit-Instance-Id"
-	targetAccountIDHeaderName             = "X-Cockpit-Target-Account-Id"
+	clientAPIKeyContextKey         contextKey = "cockpitClientAPIKey"
+	requestKindContextKey          contextKey = "cockpitRequestKind"
+	requestModelContextKey         contextKey = "cockpitRequestModel"
+	requestUpstreamModelContextKey contextKey = "cockpitUpstreamModel"
+	clientInstanceIDContextKey     contextKey = "cockpitClientInstanceId"
+	targetAccountIDContextKey      contextKey = "cockpitTargetAccountId"
+	clientInstanceIDHeaderName                = "X-Cockpit-Instance-Id"
+	targetAccountIDHeaderName                 = "X-Cockpit-Target-Account-Id"
 )
 
 const ginUserAPIKeyKey = "userApiKey"
@@ -470,6 +471,8 @@ type requestDiagnosticPayload struct {
 	Path                    string                     `json:"path,omitempty"`
 	RequestKind             string                     `json:"requestKind,omitempty"`
 	Model                   string                     `json:"model,omitempty"`
+	RequestedModel          string                     `json:"requestedModel,omitempty"`
+	UpstreamModel           string                     `json:"upstreamModel,omitempty"`
 	APIKeyID                string                     `json:"apiKeyId,omitempty"`
 	APIKeyLabel             string                     `json:"apiKeyLabel,omitempty"`
 	Transport               string                     `json:"transport,omitempty"`
@@ -561,6 +564,7 @@ type usageFinalizeInput struct {
 	spec          *apiKeySpec
 	requestKind   string
 	model         string
+	upstreamModel string
 	status        int
 	latencyMS     int64
 	completedAtMS int64
@@ -876,6 +880,11 @@ func (t *requestUsageTracker) finalize(requestID string, input usageFinalizeInpu
 			APIKeyLabel:   stringFromAPIKey(input.spec, "label"),
 			RequestKind:   strings.TrimSpace(input.requestKind),
 			RequestedAtMS: input.completedAtMS,
+		}
+		payload.RequestedModel = strings.TrimSpace(input.model)
+		payload.UpstreamModel = strings.TrimSpace(input.upstreamModel)
+		if payload.UpstreamModel != "" {
+			payload.Model = payload.UpstreamModel
 		}
 	}
 
@@ -1501,23 +1510,26 @@ func (p *requestPolicy) emitRequestCompleted(c *gin.Context, requestID string, s
 		return
 	}
 	status := c.Writer.Status()
+	upstreamModel, _ := c.Request.Context().Value(requestUpstreamModelContextKey).(string)
 	latencyMS := time.Since(startedAt).Milliseconds()
 	completedAtMS := time.Now().UnixMilli()
 	p.emitter.emit(requestDiagnosticPayload{
-		Type:          "request_completed",
-		RequestID:     requestID,
-		Method:        c.Request.Method,
-		Path:          requestPath(c.Request),
-		RequestKind:   requestKind,
-		Model:         model,
-		APIKeyID:      stringFromAPIKey(spec, "id"),
-		APIKeyLabel:   stringFromAPIKey(spec, "label"),
-		Transport:     diagnosticTransport(c.Request),
-		Status:        status,
-		LatencyMS:     latencyMS,
-		CompletedAtMS: completedAtMS,
-		Aborted:       c.IsAborted(),
-		ErrorMessage:  strings.TrimSpace(c.Errors.String()),
+		Type:           "request_completed",
+		RequestID:      requestID,
+		Method:         c.Request.Method,
+		Path:           requestPath(c.Request),
+		RequestKind:    requestKind,
+		Model:          model,
+		RequestedModel: model,
+		UpstreamModel:  strings.TrimSpace(upstreamModel),
+		APIKeyID:       stringFromAPIKey(spec, "id"),
+		APIKeyLabel:    stringFromAPIKey(spec, "label"),
+		Transport:      diagnosticTransport(c.Request),
+		Status:         status,
+		LatencyMS:      latencyMS,
+		CompletedAtMS:  completedAtMS,
+		Aborted:        c.IsAborted(),
+		ErrorMessage:   strings.TrimSpace(c.Errors.String()),
 	})
 	if p.tracker == nil || !shouldEmitRequestDiagnostic(c.Request) {
 		return
@@ -1538,6 +1550,7 @@ func (p *requestPolicy) emitRequestCompleted(c *gin.Context, requestID string, s
 		spec:          spec,
 		requestKind:   requestKind,
 		model:         model,
+		upstreamModel: upstreamModel,
 		status:        status,
 		latencyMS:     latencyMS,
 		completedAtMS: completedAtMS,

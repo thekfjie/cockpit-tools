@@ -349,6 +349,7 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 			}
 		}
 	}
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), requestUpstreamModelContextKey, upstreamModel))
 	upstreamPath := "/v1/responses"
 	upstreamBody := rewriteProviderGatewayBodyModel(body, upstreamModel)
 	if wireAPI == "chat_completions" {

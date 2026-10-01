@@ -205,6 +205,8 @@ func writeAPIError(c *gin.Context, status int, message, code string) {
 	if code == "" {
 		code = "error"
 	}
+	// Request finalization reads Gin errors for the persisted failure details.
+	_ = c.Error(errors.New(message))
 	c.JSON(status, gin.H{
 		"error": gin.H{
 			"message": message,
