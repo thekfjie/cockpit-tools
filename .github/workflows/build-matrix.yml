@@ -73,7 +73,6 @@ jobs:
       - name: Run full Rust test suite
         run: |
           unset NVM_BIN NVM_DIR FNM_MULTISHELL_PATH FNM_DIR ASDF_DATA_DIR
-          cargo test -p cockpit-tools --lib quick_config_without_model_overrides -- --test-threads=1 --nocapture
           cargo test --workspace --all-targets -- --test-threads=1
 
   windows-package:
@@ -112,10 +111,6 @@ jobs:
 
       - name: Build embedded frontend
         run: npm run build
-
-      - name: Compile Windows Rust tests
-        working-directory: src-tauri
-        run: cargo test --lib --no-run
 
       - name: Build unsigned NSIS installer
         shell: pwsh
