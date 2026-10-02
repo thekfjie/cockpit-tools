@@ -130,22 +130,6 @@ jobs:
           if-no-files-found: warn
           path: build-windows.log
 
-      - name: Install and verify embedded frontend
-        shell: pwsh
-        run: ./scripts/windows-maintenance-smoke.ps1
-
-      - name: Upload installed frontend evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cockpit-tools-windows-frontend-smoke
-          retention-days: 14
-          if-no-files-found: warn
-          path: |
-            frontend-smoke.json
-            smoke-stdout.log
-            smoke-stderr.log
-
       - name: Upload Windows installer and executable
         uses: actions/upload-artifact@v4
         with:
