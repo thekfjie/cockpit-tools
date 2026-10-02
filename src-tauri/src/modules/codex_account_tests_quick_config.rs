@@ -1614,6 +1614,14 @@
         crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &oai).unwrap();
         let oai_catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
         assert!(!oai_catalog["models"].as_array().unwrap().iter().any(|model| model["display_name"] == "Key Kimi"));
+        let sol = oai_catalog["models"].as_array().unwrap().iter()
+            .find(|model| model["slug"] == "gpt-6.1-sol")
+            .expect("the current Sol model must retain its actual ID after a Key switch");
+        assert_eq!(sol["display_name"], "gpt-6.1-sol");
+        assert!(!oai_catalog["models"].as_array().unwrap().iter()
+            .any(|model| model["slug"] == "gpt-5.6-terra" && model["display_name"] == "gpt-6.1-sol"));
+        let switched_config = crate::modules::codex_config_format::load_codex_config_doc(&base_dir.join("config.toml")).unwrap();
+        assert_eq!(switched_config["model"].as_str(), Some("gpt-6.1-sol"));
         assert_eq!(crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&catalog_path).as_deref(), Some("oai"));
         crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &third).unwrap();
         assert_third();

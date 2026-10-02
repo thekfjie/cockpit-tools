@@ -132,32 +132,7 @@ jobs:
 
       - name: Install and verify embedded frontend
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installer = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
-          if (-not $installer) { throw 'NSIS installer is missing' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'cockpit-maintenance-smoke'
-          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$installDir" -WindowStyle Hidden -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
-          $executable = Get-ChildItem -LiteralPath $installDir -Filter 'cockpit*tools.exe' | Select-Object -First 1
-          if (-not $executable) { throw 'Installed application is missing' }
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=49231'
-          $app = Start-Process -FilePath $executable.FullName -WorkingDirectory $installDir -WindowStyle Hidden -PassThru
-          try {
-            $targets = @()
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-              Start-Sleep -Seconds 1
-              if ($app.HasExited) { throw "Installed app exited: $($app.ExitCode)" }
-              try { $targets = @(Invoke-RestMethod 'http://127.0.0.1:49231/json/list') } catch { continue }
-              if ($targets | Where-Object { $_.type -eq 'page' -and $_.url -match '(tauri://localhost|https?://tauri.localhost)' }) { break }
-            }
-            $pages = @($targets | Where-Object { $_.type -eq 'page' })
-            $pages | Select-Object type,url | ConvertTo-Json | Set-Content frontend-smoke.json
-            if ($pages | Where-Object { $_.url -match '(localhost|127\.0\.0\.1):1420' }) { throw 'Release app opened the development server' }
-            if (-not ($pages | Where-Object { $_.url -match '(tauri://localhost|https?://tauri.localhost)' })) { throw 'Embedded frontend did not open' }
-          } finally {
-            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
-          }
+        run: ./scripts/windows-maintenance-smoke.ps1
 
       - name: Upload installed frontend evidence
         if: always()
@@ -166,7 +141,10 @@ jobs:
           name: cockpit-tools-windows-frontend-smoke
           retention-days: 14
           if-no-files-found: warn
-          path: frontend-smoke.json
+          path: |
+            frontend-smoke.json
+            smoke-stdout.log
+            smoke-stderr.log
 
       - name: Upload Windows installer and executable
         uses: actions/upload-artifact@v4
