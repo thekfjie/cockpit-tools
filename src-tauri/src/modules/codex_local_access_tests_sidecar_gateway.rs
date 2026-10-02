@@ -64,7 +64,7 @@
     }
 
     #[test]
-    fn provider_catalog_keeps_hidden_terra_entry_for_open_desktop_chats() {
+    fn provider_catalog_contains_only_active_slots() {
         let slots = vec![super::ProviderGatewayModelSlot {
             client_model: "gpt-6.1-sol".to_string(),
             upstream_model: "gpt-6.1-sol".to_string(),
@@ -81,14 +81,60 @@
             .expect("selected Key model remains present");
         assert_eq!(selected["display_name"], "gpt-6.1-sol");
         assert_eq!(selected["visibility"], "list");
+        assert!(models.iter().all(|model| model["slug"] != "gpt-5.6-terra"));
+    }
 
-        let historical = models
+    #[test]
+    fn previous_provider_models_keep_metadata_for_open_desktop_chats() {
+        let next = r#"{
+            "models": [{
+                "slug": "gpt-6.1-sol",
+                "display_name": "GPT-6.1 Sol",
+                "visibility": "list",
+                "context_window": 300000,
+                "auto_compact_token_limit": 276000
+            }]
+        }"#;
+        let previous = r#"{
+            "models": [
+                {
+                    "slug": "gpt-5.6-terra",
+                    "display_name": "Kimi K3",
+                    "visibility": "list",
+                    "context_window": 300000,
+                    "auto_compact_token_limit": 276000
+                },
+                {
+                    "slug": "gpt-6.1-sol",
+                    "display_name": "stale name",
+                    "visibility": "list",
+                    "context_window": 128000,
+                    "auto_compact_token_limit": 110000
+                }
+            ]
+        }"#;
+        let catalog: serde_json::Value = serde_json::from_str(
+            &super::merge_previous_provider_catalog_models(next, previous)
+                .expect("merge previous provider catalog"),
+        )
+        .expect("parse merged catalog");
+        let models = catalog["models"].as_array().expect("catalog models");
+        let retained = models
             .iter()
             .find(|model| model["slug"] == "gpt-5.6-terra")
-            .expect("desktop fallback model remains resolvable");
-        assert_eq!(historical["display_name"], "GPT-5.6 Terra");
-        assert_eq!(historical["visibility"], "hide");
-        assert!(slots.iter().all(|slot| slot.client_model != "gpt-5.6-terra"));
+            .expect("retained model stays resolvable");
+        assert_eq!(retained["display_name"], "Kimi K3");
+        assert_eq!(retained["visibility"], "hide");
+        assert_eq!(retained["context_window"], 300000);
+        assert_eq!(retained["auto_compact_token_limit"], 276000);
+
+        let active = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-6.1-sol")
+            .expect("new active model remains present");
+        assert_eq!(active["display_name"], "GPT-6.1 Sol");
+        assert_eq!(active["visibility"], "list");
+        assert_eq!(active["context_window"], 300000);
     }
 
     #[test]

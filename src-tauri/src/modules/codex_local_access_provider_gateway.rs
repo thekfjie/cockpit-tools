@@ -785,17 +785,6 @@ pub(crate) fn build_provider_model_catalog_json(
         .iter()
         .map(|slot| slot.client_model.clone())
         .collect::<Vec<_>>();
-    // Codex Desktop may keep this historical model ID on an already-open chat
-    // while a provider switch rotates the visible catalog. Keep a hidden entry
-    // solely so the client can resolve its real display name instead of showing
-    // "Custom". This does not add a route or make the model selectable.
-    const HISTORICAL_DESKTOP_MODEL_ID: &str = "gpt-5.6-terra";
-    if !model_ids
-        .iter()
-        .any(|model| model.eq_ignore_ascii_case(HISTORICAL_DESKTOP_MODEL_ID))
-    {
-        model_ids.push(HISTORICAL_DESKTOP_MODEL_ID.to_string());
-    }
     if !model_ids
         .iter()
         .any(|model| model.eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL_ID))
@@ -835,8 +824,6 @@ pub(crate) fn build_provider_model_catalog_json(
                 if !slug.eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL_ID) {
                     object.insert("visibility".to_string(), Value::String("list".to_string()));
                 }
-            } else if slug.eq_ignore_ascii_case(HISTORICAL_DESKTOP_MODEL_ID) {
-                object.insert("visibility".to_string(), Value::String("hide".to_string()));
             }
         }
     }
@@ -849,6 +836,71 @@ pub(crate) fn build_provider_model_catalog_json(
             .unwrap_or_default(),
     });
     serde_json::to_string_pretty(&catalog).map_err(|e| format!("生成 Codex 模型目录失败: {}", e))
+}
+
+/// Keep model metadata for threads that were already open when the provider catalog changed.
+///
+/// Old entries remain hidden: they are used only to resolve the retained model ID's display
+/// name and its already-effective context settings. They are never added to the active route
+/// slots or the new account's picker.
+fn merge_previous_provider_catalog_models(
+    next_catalog_json: &str,
+    previous_catalog_json: &str,
+) -> Result<String, String> {
+    let mut next_catalog: Value = serde_json::from_str(next_catalog_json)
+        .map_err(|error| format!("解析新 provider 模型目录失败: {}", error))?;
+    let previous_catalog: Value = serde_json::from_str(previous_catalog_json)
+        .map_err(|error| format!("解析旧 provider 模型目录失败: {}", error))?;
+    let previous_models = previous_catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "旧 provider 模型目录缺少 models 数组".to_string())?;
+
+    let existing: HashSet<String> = next_catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .map(|slug| slug.trim().to_ascii_lowercase())
+        .filter(|slug| !slug.is_empty())
+        .collect();
+    let mut retained = Vec::new();
+    let mut seen = existing;
+    for previous_model in previous_models {
+        let Some(slug) = previous_model
+            .get("slug")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())
+        else {
+            continue;
+        };
+        if !seen.insert(slug.to_ascii_lowercase()) {
+            continue;
+        }
+        let mut retained_model = previous_model.clone();
+        if let Some(object) = retained_model.as_object_mut() {
+            object.insert("visibility".to_string(), Value::String("hide".to_string()));
+        }
+        retained.push(retained_model);
+    }
+
+    let next_models = next_catalog
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "新 provider 模型目录缺少 models 数组".to_string())?;
+    next_models.extend(retained);
+    serde_json::to_string_pretty(&next_catalog)
+        .map_err(|error| format!("序列化合并后的 provider 模型目录失败: {}", error))
+}
+
+fn retain_previous_provider_catalog_models(profile_dir: &Path, content: String) -> String {
+    let path = profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE);
+    let Ok(previous_catalog) = std::fs::read_to_string(path) else {
+        return content;
+    };
+    merge_previous_provider_catalog_models(&content, &previous_catalog).unwrap_or(content)
 }
 
 /// Provider 网关里第三方未知模型的保守兜底上下文窗口。
@@ -2746,6 +2798,7 @@ fn write_provider_gateway_model_catalog_with_templates(
     } else {
         codex_account::decorate_managed_model_catalog_for_profile(profile_dir, &content)?
     };
+    let content = retain_previous_provider_catalog_models(profile_dir, content);
     write_string_atomic(
         &profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
         &content,
