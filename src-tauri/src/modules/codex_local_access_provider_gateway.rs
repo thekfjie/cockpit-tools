@@ -785,6 +785,17 @@ pub(crate) fn build_provider_model_catalog_json(
         .iter()
         .map(|slot| slot.client_model.clone())
         .collect::<Vec<_>>();
+    // Codex Desktop may keep this historical model ID on an already-open chat
+    // while a provider switch rotates the visible catalog. Keep a hidden entry
+    // solely so the client can resolve its real display name instead of showing
+    // "Custom". This does not add a route or make the model selectable.
+    const HISTORICAL_DESKTOP_MODEL_ID: &str = "gpt-5.6-terra";
+    if !model_ids
+        .iter()
+        .any(|model| model.eq_ignore_ascii_case(HISTORICAL_DESKTOP_MODEL_ID))
+    {
+        model_ids.push(HISTORICAL_DESKTOP_MODEL_ID.to_string());
+    }
     if !model_ids
         .iter()
         .any(|model| model.eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL_ID))
@@ -805,26 +816,27 @@ pub(crate) fn build_provider_model_catalog_json(
             else {
                 continue;
             };
-            let Some(slot) = slots
+            let slot = slots
                 .iter()
-                .find(|slot| slot.client_model.eq_ignore_ascii_case(&slug))
-            else {
-                continue;
-            };
+                .find(|slot| slot.client_model.eq_ignore_ascii_case(&slug));
             let Some(object) = model.as_object_mut() else {
                 continue;
             };
-            object.insert(
-                "display_name".to_string(),
-                Value::String(slot.upstream_model.clone()),
-            );
-            object.insert(
-                "description".to_string(),
-                Value::String(slot.upstream_model.clone()),
-            );
-            // Ensure mapped provider models show up in the official picker.
-            if !slug.eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL_ID) {
-                object.insert("visibility".to_string(), Value::String("list".to_string()));
+            if let Some(slot) = slot {
+                object.insert(
+                    "display_name".to_string(),
+                    Value::String(slot.upstream_model.clone()),
+                );
+                object.insert(
+                    "description".to_string(),
+                    Value::String(slot.upstream_model.clone()),
+                );
+                // Ensure mapped provider models show up in the official picker.
+                if !slug.eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL_ID) {
+                    object.insert("visibility".to_string(), Value::String("list".to_string()));
+                }
+            } else if slug.eq_ignore_ascii_case(HISTORICAL_DESKTOP_MODEL_ID) {
+                object.insert("visibility".to_string(), Value::String("hide".to_string()));
             }
         }
     }

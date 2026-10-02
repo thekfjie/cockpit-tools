@@ -64,6 +64,34 @@
     }
 
     #[test]
+    fn provider_catalog_keeps_hidden_terra_entry_for_open_desktop_chats() {
+        let slots = vec![super::ProviderGatewayModelSlot {
+            client_model: "gpt-6.1-sol".to_string(),
+            upstream_model: "gpt-6.1-sol".to_string(),
+        }];
+        let catalog: serde_json::Value = serde_json::from_str(
+            &super::build_provider_model_catalog_json(&slots)
+                .expect("build provider model catalog"),
+        )
+        .expect("parse provider model catalog");
+        let models = catalog["models"].as_array().expect("catalog models");
+        let selected = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-6.1-sol")
+            .expect("selected Key model remains present");
+        assert_eq!(selected["display_name"], "gpt-6.1-sol");
+        assert_eq!(selected["visibility"], "list");
+
+        let historical = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-5.6-terra")
+            .expect("desktop fallback model remains resolvable");
+        assert_eq!(historical["display_name"], "GPT-5.6 Terra");
+        assert_eq!(historical["visibility"], "hide");
+        assert!(slots.iter().all(|slot| slot.client_model != "gpt-5.6-terra"));
+    }
+
+    #[test]
     fn sidecar_scheduler_state_expires_without_stale_page_cooldown() {
         let now = 1_000_000_i64;
         let mut runtime = super::GatewayRuntime::default();
