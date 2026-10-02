@@ -896,11 +896,23 @@ fn merge_previous_provider_catalog_models(
 }
 
 fn retain_previous_provider_catalog_models(profile_dir: &Path, content: String) -> String {
-    let path = profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE);
-    let Ok(previous_catalog) = std::fs::read_to_string(path) else {
-        return content;
-    };
-    merge_previous_provider_catalog_models(&content, &previous_catalog).unwrap_or(content)
+    // The atomic writer keeps the immediately preceding catalog in `.bak`. A prior Cockpit
+    // version may already have dropped an old thread's model from the main file, while that
+    // backup still contains its user-selected display name and context settings.
+    let paths = [
+        profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
+        profile_dir.join(format!("{}.bak", CODEX_PROVIDER_MODEL_CATALOG_FILE)),
+    ];
+    let mut merged = content;
+    for path in paths {
+        let Ok(previous_catalog) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if let Ok(next_catalog) = merge_previous_provider_catalog_models(&merged, &previous_catalog) {
+            merged = next_catalog;
+        }
+    }
+    merged
 }
 
 /// Provider 网关里第三方未知模型的保守兜底上下文窗口。

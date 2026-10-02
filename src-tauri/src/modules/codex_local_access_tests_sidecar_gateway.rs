@@ -138,6 +138,55 @@
     }
 
     #[test]
+    fn catalog_backup_recovers_metadata_dropped_from_current_catalog() {
+        let next = r#"{
+            "models": [{
+                "slug": "gpt-6.1-sol",
+                "display_name": "GPT-6.1 Sol",
+                "visibility": "list",
+                "context_window": 300000,
+                "auto_compact_token_limit": 276000
+            }]
+        }"#;
+        let current = r#"{
+            "models": [{
+                "slug": "gpt-6.1-sol",
+                "display_name": "GPT-6.1 Sol",
+                "visibility": "list",
+                "context_window": 300000,
+                "auto_compact_token_limit": 276000
+            }]
+        }"#;
+        let backup = r#"{
+            "models": [{
+                "slug": "gpt-5.6-terra",
+                "display_name": "Kimi K3",
+                "visibility": "list",
+                "context_window": 300000,
+                "auto_compact_token_limit": 276000
+            }]
+        }"#;
+
+        let after_current = super::merge_previous_provider_catalog_models(next, current)
+            .expect("merge current provider catalog");
+        let catalog: serde_json::Value = serde_json::from_str(
+            &super::merge_previous_provider_catalog_models(&after_current, backup)
+                .expect("merge provider catalog backup"),
+        )
+        .expect("parse merged catalog");
+        let retained = catalog["models"]
+            .as_array()
+            .expect("catalog models")
+            .iter()
+            .find(|model| model["slug"] == "gpt-5.6-terra")
+            .expect("backup-only model stays resolvable");
+        assert_eq!(retained["display_name"], "Kimi K3");
+        assert_eq!(retained["visibility"], "hide");
+        assert_eq!(retained["context_window"], 300000);
+        assert_eq!(retained["auto_compact_token_limit"], 276000);
+    }
+
+    #[test]
     fn sidecar_scheduler_state_expires_without_stale_page_cooldown() {
         let now = 1_000_000_i64;
         let mut runtime = super::GatewayRuntime::default();
