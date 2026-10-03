@@ -94,6 +94,9 @@ pub fn codex_config_doc_to_string(doc: &mut Document) -> String {
 }
 
 pub fn write_codex_config_toml_atomic(path: &Path, content: &str) -> Result<(), String> {
+    if fs::read(path).ok().as_deref() == Some(content.as_bytes()) {
+        return Ok(());
+    }
     prepare_codex_config_file_for_write(path)?;
     crate::modules::atomic_write::write_string_atomic(path, content)
 }

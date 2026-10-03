@@ -1581,7 +1581,7 @@
         let assert_third = || {
             let catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
             let models = catalog["models"].as_array().unwrap();
-            let visible: Vec<_> = models.iter().filter(|model| model["slug"] != "codex-auto-review").collect();
+            let visible: Vec<_> = models.iter().filter(|model| model["visibility"] != "hide").collect();
             assert_eq!(visible.len(), 2, "instance GPT models must not enter the Key catalog");
             let kimi = visible.iter().find(|model| model["display_name"] == "Key Kimi").unwrap();
             let glm = visible.iter().find(|model| model["display_name"] == "Key GLM").unwrap();
@@ -1593,11 +1593,30 @@
             assert_eq!(config["model"].as_str(), glm["slug"].as_str());
         };
         assert_third();
+        // Simulate a previous release dropping the owner while keeping a valid hash.
+        let mut old_catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        old_catalog.as_object_mut().unwrap().remove("cockpit_account_id");
+        fs::write(&catalog_path, old_catalog.to_string()).unwrap();
+        crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta(&catalog_path).unwrap();
+        fs::write(data_dir.join("codex_instances.json"), serde_json::json!({
+            "instances": [], "defaultSettings": {"bindAccountId": "__provider_gateway__:third", "followLocalAccount": false}
+        }).to_string()).unwrap();
+        super::rebuild_managed_catalog_from_existing(&catalog_path).unwrap();
+        assert_third();
+        assert_eq!(crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&catalog_path).as_deref(), Some("third"));
         let other = env.home_dir.join("other-profile");
         fs::create_dir_all(&other).unwrap();
         fs::write(other.join("config.toml"), "model_provider = \"codex_local_access\"\n").unwrap();
         crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&other, &oai).unwrap();
         let other_before = fs::read(other.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)).unwrap();
+        let user_profile = env.home_dir.join("user-profile");
+        fs::create_dir_all(&user_profile).unwrap();
+        fs::write(user_profile.join("config.toml"), "model = \"user-model\"\nmodel_catalog_json = \"user-models.json\"\n").unwrap();
+        fs::write(user_profile.join("user-models.json"), "user sentinel").unwrap();
+        let user_before = fs::read(user_profile.join("config.toml")).unwrap();
+        assert!(crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&user_profile, &third).is_err());
+        assert_eq!(fs::read(user_profile.join("config.toml")).unwrap(), user_before);
+        assert_eq!(fs::read_to_string(user_profile.join("user-models.json")).unwrap(), "user sentinel");
         for enabled in [false, true] {
             write_quick_config_to_config_toml(&base_dir, Some(1_000_000), Some(900_000), Some(enabled), None).unwrap();
             assert_eq!(super::experimental_model_policy_enabled(&base_dir), enabled);
@@ -1613,7 +1632,8 @@
         assert_eq!(fs::read(other.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)).unwrap(), other_before);
         crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &oai).unwrap();
         let oai_catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
-        assert!(!oai_catalog["models"].as_array().unwrap().iter().any(|model| model["display_name"] == "Key Kimi"));
+        assert!(!oai_catalog["models"].as_array().unwrap().iter().any(|model| model["visibility"] != "hide" && model["display_name"] == "Key Kimi"));
+        assert!(oai_catalog["models"].as_array().unwrap().iter().any(|model| model["visibility"] == "hide" && model["display_name"] == "Key Kimi"));
         let sol = oai_catalog["models"].as_array().unwrap().iter()
             .find(|model| model["slug"] == "gpt-6.1-sol")
             .expect("the current Sol model must retain its actual ID after a Key switch");

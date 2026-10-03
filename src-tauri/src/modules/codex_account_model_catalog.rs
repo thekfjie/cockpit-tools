@@ -67,7 +67,7 @@ fn catalog_ref_targets_profile_file(value: &str, base_dir: &Path, file_name: &st
         .eq_ignore_ascii_case(&absolute_path_for_config(&base_dir.join(file_name)))
 }
 
-fn catalog_ref_targets_cockpit_managed_file(value: &str, base_dir: &Path) -> bool {
+pub(crate) fn catalog_ref_targets_cockpit_managed_file(value: &str, base_dir: &Path) -> bool {
     [
         CODEX_MANAGED_MODEL_CATALOG_FILE,
         CODEX_LEGACY_PROVIDER_MODEL_CATALOG_FILE,
@@ -1467,9 +1467,30 @@ fn gateway_catalog_owner_for_doc(base_dir: &Path, doc: &Document) -> Option<Stri
         != Some(CODEX_RUNTIME_MODEL_PROVIDER_ID) { return None; }
     let reference = doc.get(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY)?.as_str()?;
     if !catalog_ref_targets_cockpit_managed_file(reference, base_dir) { return None; }
-    crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(
+    if let Some(owner) = crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(
         &base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE),
-    )
+    ) { return Some(owner); }
+    // Older writers dropped the owner stamp. Recover only the account explicitly
+    // bound to this profile, without normalizing or rewriting the instance store.
+    let store = crate::modules::account::get_data_dir().ok()
+        .and_then(|dir| fs::read_to_string(dir.join("codex_instances.json")).ok())
+        .and_then(|content| serde_json::from_str::<crate::models::InstanceStore>(&content).ok());
+    let is_default = base_dir == get_codex_home();
+    let bound = store.as_ref().and_then(|store| {
+        if is_default { store.default_settings.bind_account_id.clone() }
+        else { store.instances.iter().find(|instance| Path::new(&instance.user_data_dir) == base_dir)
+            .and_then(|instance| instance.bind_account_id.clone()) }
+    });
+    let account_id = if let Some(bound) = bound {
+        if crate::modules::codex_instance::is_api_service_bind_account_id(&bound) { return None; }
+        crate::modules::codex_instance::parse_provider_gateway_bind_account_id(&bound)
+            .unwrap_or(bound)
+    } else if is_default && store.as_ref().is_none_or(|store| store.default_settings.follow_local_account) {
+        let content = fs::read_to_string(get_accounts_storage_path()).ok()?;
+        let index: CodexAccountIndex = serde_json::from_str(&content).ok()?;
+        index.current_account_id?
+    } else { return None; };
+    load_account(&account_id).filter(CodexAccount::is_api_key_auth).map(|account| account.id)
 }
 
 fn gateway_catalog_for_doc(
@@ -1504,9 +1525,8 @@ fn apply_experimental_model_catalog_to_doc(
             if let Some(default_model) = default_model { doc["model"] = value(default_model); }
         }
         let path = base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE);
-        write_string_atomic(&path, &content)?;
-        crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta_for_gateway(
-            &path, Some(&account_id),
+        crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
+            &path, &content, Some(&account_id),
         )?;
         crate::modules::codex_local_access::invalidate_codex_model_cache(base_dir)?;
         doc[CODEX_CONFIG_MODEL_CATALOG_JSON_KEY] = value(CODEX_MANAGED_MODEL_CATALOG_FILE);
@@ -1621,7 +1641,9 @@ fn apply_experimental_model_catalog_to_doc(
             &generated_content,
         )?
     };
-    write_string_atomic(&experimental_model_catalog_path(base_dir), &content)
+    crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
+        &experimental_model_catalog_path(base_dir), &content, None,
+    )
         .map_err(|_| "EXPERIMENTAL_MODEL_CATALOG_WRITE_FAILED".to_string())?;
     crate::modules::codex_local_access::invalidate_codex_model_cache(base_dir)
         .map_err(|_| "EXPERIMENTAL_MODEL_CATALOG_CACHE_CLEAR_FAILED".to_string())?;
@@ -2685,26 +2707,14 @@ fn sync_api_key_model_catalog_to_dir(
         crate::modules::codex_local_access::read_toml_model_auto_compact_token_limit(&doc),
     )?;
     validate_catalog_against_global_compaction_limit(&content, &doc)?;
-    let content = decorate_managed_model_catalog_for_profile(base_dir, &content)?;
     let catalog_path = base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE);
-    write_string_atomic(&catalog_path, &content).map_err(|e| {
+    crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(&catalog_path, &content, Some(&account.id)).map_err(|e| {
         format!(
             "写入 Codex 模型目录失败: path={}, error={}",
             catalog_path.display(),
             e
         )
     })?;
-    if let Err(err) =
-        crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta(
-            &catalog_path,
-        )
-    {
-        logger::log_warn(&format!(
-            "[Codex模型目录] 写入版本戳失败: path={}, error={}",
-            catalog_path.display(),
-            err
-        ));
-    }
     cleanup_legacy_managed_model_catalogs(base_dir);
 
     doc[CODEX_CONFIG_MODEL_CATALOG_JSON_KEY] = value(CODEX_MANAGED_MODEL_CATALOG_FILE);
@@ -3006,10 +3016,10 @@ fn rebuild_managed_catalog_from_existing(catalog_path: &Path) -> Result<(), Stri
             let config = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
             crate::modules::codex_config_format::write_codex_config_toml_atomic(&config_path, &config)?;
         }
-        write_string_atomic(catalog_path, &content)?;
-        return crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta_for_gateway(
-            catalog_path, Some(&account_id),
-        );
+        crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
+            catalog_path, &content, Some(&account_id),
+        )?;
+        return Ok(());
     }
     let mut rebuilt = if experimental_model_policy_enabled(base_dir) {
         build_experimental_model_catalog(base_dir, &doc)
@@ -3048,8 +3058,10 @@ fn rebuild_managed_catalog_from_existing(catalog_path: &Path) -> Result<(), Stri
     let mut content = serde_json::to_string_pretty(&rebuilt)
         .map_err(|e| format!("序列化重建后的模型目录失败: {}", e))?;
     content.push('\n');
-    crate::modules::atomic_write::write_string_atomic(catalog_path, &content)?;
-    crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta(catalog_path)
+    crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
+        catalog_path, &content, None,
+    )?;
+    Ok(())
 }
 
 fn collect_managed_api_key_provider_ids() -> HashSet<String> {

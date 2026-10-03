@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 /// 4：加入 GPT-6.1 Sol 客户端目录。
 /// 5：删除退役型号的内置模板与兼容槽位。
 /// 6：按目录所属 API Key 重建，保留有效上下文与默认模型。
-pub(crate) const MANAGED_MODEL_CATALOG_GENERATOR_VERSION: u32 = 6;
+// 7: stable model identities and one writer for all managed catalog lifecycles.
+pub(crate) const MANAGED_MODEL_CATALOG_GENERATOR_VERSION: u32 = 7;
+
+static MANAGED_CATALOG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 const META_FILE_NAME: &str = "cockpit-model-catalog.meta.json";
 
@@ -50,9 +53,46 @@ pub(crate) fn write_managed_catalog_meta(catalog_path: &Path) -> Result<(), Stri
 
 pub(crate) fn managed_catalog_gateway_account_id(catalog_path: &Path) -> Option<String> {
     if !catalog_path.is_file() { return None; }
+    let catalog = fs::read_to_string(catalog_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&catalog).ok()?;
+    if let Some(owner) = parsed.get("cockpit_account_id") {
+        return owner.as_str().filter(|id| !id.trim().is_empty()).map(str::to_string);
+    }
     let content = fs::read_to_string(managed_catalog_meta_path(catalog_path)).ok()?;
-    serde_json::from_str::<ManagedModelCatalogMeta>(&content).ok()?
-        .gateway_account_id.filter(|id| !id.trim().is_empty())
+    let meta = serde_json::from_str::<ManagedModelCatalogMeta>(&content).ok()?;
+    if meta.catalog_hash != managed_catalog_hash(&catalog) { return None; }
+    meta.gateway_account_id.filter(|id| !id.trim().is_empty())
+}
+
+/// Only Cockpit's owned catalog is writable here; user catalogs are never updated.
+pub(crate) fn write_managed_model_catalog(
+    catalog_path: &Path,
+    content: &str,
+    account_id: Option<&str>,
+) -> Result<bool, String> {
+    if catalog_path.file_name().and_then(|name| name.to_str()) != Some("cockpit-model-catalog.json") {
+        return Err(format!("Refusing to overwrite a user model catalog: {}", catalog_path.display()));
+    }
+    let profile_dir = catalog_path.parent().ok_or("Model catalog has no profile directory")?;
+    let _guard = MANAGED_CATALOG_WRITE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut parsed: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("Invalid managed model catalog: {}", error))?;
+    if parsed.get("models").and_then(serde_json::Value::as_array).is_none() {
+        return Err("Managed model catalog has no models array".into());
+    }
+    // Store ownership with the catalog itself, so a crash between catalog and meta
+    // writes cannot assign the new Key's models to the previous Key.
+    parsed["cockpit_account_id"] = account_id.map_or(serde_json::Value::Null, |id| id.into());
+    let serialized = serde_json::to_string_pretty(&parsed).map_err(|error| error.to_string())?;
+    let content = crate::modules::codex_local_access::retain_previous_provider_catalog_models(
+        profile_dir, serialized,
+    );
+    let changed = fs::read_to_string(catalog_path).ok().as_deref() != Some(content.as_str());
+    if changed {
+        crate::modules::atomic_write::write_string_atomic(catalog_path, &content)?;
+    }
+    write_managed_catalog_meta_for_gateway(catalog_path, account_id)?;
+    Ok(changed)
 }
 
 pub(crate) fn write_managed_catalog_meta_for_gateway(
@@ -73,6 +113,17 @@ pub(crate) fn write_managed_catalog_meta_for_gateway(
         written_at_ms: chrono::Utc::now().timestamp_millis(),
         gateway_account_id: account_id.map(str::to_string),
     };
+    if let Ok(existing) = fs::read_to_string(managed_catalog_meta_path(catalog_path)) {
+        if let Ok(previous) = serde_json::from_str::<ManagedModelCatalogMeta>(&existing) {
+            if previous.generator == meta.generator
+                && previous.app_version == meta.app_version
+                && previous.catalog_hash == meta.catalog_hash
+                && previous.gateway_account_id == meta.gateway_account_id
+            {
+                return Ok(());
+            }
+        }
+    }
     let serialized = serde_json::to_string_pretty(&meta)
         .map_err(|e| format!("序列化模型目录版本戳失败: {}", e))?;
     crate::modules::atomic_write::write_string_atomic(
@@ -140,6 +191,88 @@ mod tests {
         write(&catalog, "{\"models\":[{\"slug\":\"grok-4.6\"}]}");
         assert!(managed_catalog_needs_rebuild(&catalog));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn managed_catalog_switches_preserve_identity_without_extra_files_or_writes() {
+        let dir = std::env::temp_dir().join(format!("catalog-lifecycle-{}-{}", std::process::id(), chrono::Utc::now().timestamp_micros()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cockpit-model-catalog.json");
+        let user_path = dir.join("user-models.json");
+        write(&user_path, "user-owned sentinel");
+        let first = serde_json::json!({"models": [
+            {"slug": "kimi-k3-1", "display_name": "Kimi K3", "visibility": "list", "context_window": 300000, "auto_compact_token_limit": 276000},
+            {"slug": "glm-5.3", "display_name": "GLM 5.3", "visibility": "list", "context_window": 256000, "auto_compact_token_limit": 230000},
+            {"slug": "vendor/model-v9", "display_name": "My Vendor Model", "visibility": "list", "context_window": 128000, "auto_compact_token_limit": 110000}
+        ]});
+        let second = serde_json::json!({"models": [
+            {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list", "context_window": 300000, "auto_compact_token_limit": 276000}
+        ]});
+        let complete_catalog = |source: &serde_json::Value| {
+            let ids = source["models"].as_array().unwrap().iter()
+                .map(|model| model["slug"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+            let mut catalog = crate::modules::codex_protocol::build_codex_client_models_response(&ids);
+            for model in catalog["models"].as_array_mut().unwrap() {
+                if let Some(overrides) = source["models"].as_array().unwrap().iter().find(|item| item["slug"] == model["slug"]) {
+                    for (key, value) in overrides.as_object().unwrap() {
+                        model[key] = value.clone();
+                    }
+                }
+            }
+            catalog
+        };
+        let first = complete_catalog(&first);
+        let second = complete_catalog(&second);
+        assert!(write_managed_model_catalog(&path, &first.to_string(), Some("key-third")).unwrap());
+        let first_content = fs::read_to_string(&path).unwrap();
+        assert!(write_managed_model_catalog(&path, &second.to_string(), Some("key-oai")).unwrap());
+        let content = fs::read_to_string(&path).unwrap();
+        let meta = fs::read(managed_catalog_meta_path(&path)).unwrap();
+        let backup = fs::read(path.with_extension("json.bak")).unwrap();
+        let meta_backup = fs::read(managed_catalog_meta_path(&path).with_extension("json.bak")).unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(&content).unwrap();
+        for source in first["models"].as_array().unwrap() {
+            let retained = catalog["models"].as_array().unwrap().iter().find(|item| item["slug"] == source["slug"]).unwrap();
+            assert_eq!(retained["display_name"], source["display_name"]);
+            assert_eq!(retained["context_window"], source["context_window"]);
+            assert_eq!(retained["visibility"], "hide");
+        }
+        assert_eq!(managed_catalog_gateway_account_id(&path).as_deref(), Some("key-oai"));
+        // Repeated reconciliation must not rotate backups or timestamps.
+        assert!(!write_managed_model_catalog(&path, &second.to_string(), Some("key-oai")).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        assert_eq!(fs::read(managed_catalog_meta_path(&path)).unwrap(), meta);
+        assert_eq!(fs::read(path.with_extension("json.bak")).unwrap(), backup);
+        assert_eq!(fs::read(managed_catalog_meta_path(&path).with_extension("json.bak")).unwrap(), meta_backup);
+        assert!(write_managed_model_catalog(&user_path, &first.to_string(), Some("key-third")).is_err());
+        assert!(write_managed_model_catalog(&path, "{\"models\":null}", Some("key-third")).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        assert_eq!(fs::read_to_string(&user_path).unwrap(), "user-owned sentinel");
+        // Catalog ownership remains correct even if a stale meta survives a crash.
+        write(&managed_catalog_meta_path(&path), "{}");
+        assert_eq!(managed_catalog_gateway_account_id(&path).as_deref(), Some("key-oai"));
+        assert!(managed_catalog_needs_rebuild(&path));
+        assert!(!write_managed_model_catalog(&path, &second.to_string(), Some("key-oai")).unwrap());
+        assert!(!managed_catalog_needs_rebuild(&path));
+        assert!(write_managed_model_catalog(&path, &first.to_string(), Some("key-third")).unwrap());
+        let restored: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        for source in first["models"].as_array().unwrap() {
+            let active = restored["models"].as_array().unwrap().iter().find(|item| item["slug"] == source["slug"]).unwrap();
+            assert_eq!(active["display_name"], source["display_name"]);
+            assert_eq!(active["visibility"], "list");
+        }
+        // CI consumes the real writer outputs with an isolated Codex app-server.
+        if let Ok(output_dir) = std::env::var("COCKPIT_CATALOG_CONTRACT_OUTPUT") {
+            let output = PathBuf::from(output_dir);
+            fs::create_dir_all(&output).unwrap();
+            write(&output.join("key-third.json"), &first_content);
+            write(&output.join("key-oai.json"), &content);
+            write(&output.join("key-third-restored.json"), &fs::read_to_string(&path).unwrap());
+        }
+        let mut names = fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec!["cockpit-model-catalog.json", "cockpit-model-catalog.json.bak", "cockpit-model-catalog.meta.json", "cockpit-model-catalog.meta.json.bak", "user-models.json"]);
+        fs::remove_dir_all(dir).unwrap();
     }
 
 }

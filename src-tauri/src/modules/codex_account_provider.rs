@@ -1342,7 +1342,6 @@ fn write_deepseek_official_model_catalog_file(
         crate::modules::codex_local_access::read_file_model_auto_compact_token_limit(&get_config_toml_path(base_dir)),
     )?;
     let catalog_path = deepseek_official_model_catalog_path(base_dir);
-    let content = decorate_managed_model_catalog_for_profile(base_dir, &content)?;
     if let Some(parent) = catalog_path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -1352,24 +1351,13 @@ fn write_deepseek_official_model_catalog_file(
             )
         })?;
     }
-    write_string_atomic(&catalog_path, &content).map_err(|e| {
+    crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(&catalog_path, &content, Some(&account.id)).map_err(|e| {
         format!(
             "写入 DeepSeek 官方模型目录失败: path={}, error={}",
             catalog_path.display(),
             e
         )
     })?;
-    if let Err(err) =
-        crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta(
-            &catalog_path,
-        )
-    {
-        logger::log_warn(&format!(
-            "[Codex模型目录] 写入版本戳失败: path={}, error={}",
-            catalog_path.display(),
-            err
-        ));
-    }
     remove_leftover_deepseek_models_json(base_dir);
     if let Err(error) = crate::modules::codex_local_access::invalidate_codex_model_cache(base_dir) {
         logger::log_warn(&format!(
@@ -2044,7 +2032,6 @@ fn sync_deepseek_shell_remap_catalog_to_dir(
         crate::modules::codex_local_access::read_file_model_auto_compact_token_limit(&get_config_toml_path(base_dir)),
     )?;
     let catalog_path = deepseek_official_model_catalog_path(base_dir);
-    let content = decorate_managed_model_catalog_for_profile(base_dir, &content)?;
     if let Some(parent) = catalog_path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -2054,7 +2041,7 @@ fn sync_deepseek_shell_remap_catalog_to_dir(
             )
         })?;
     }
-    write_string_atomic(&catalog_path, &content).map_err(|e| {
+    crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(&catalog_path, &content, Some(&account.id)).map_err(|e| {
         format!(
             "写入 DeepSeek 模型目录失败: path={}, error={}",
             catalog_path.display(),

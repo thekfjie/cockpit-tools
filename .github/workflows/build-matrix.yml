@@ -120,6 +120,38 @@ jobs:
       - name: Build embedded frontend
         run: npm run build
 
+      - name: Run frontend regression checks on Windows
+        shell: pwsh
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/check_locales.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows model catalog regressions
+        shell: pwsh
+        run: |
+          $env:COCKPIT_CATALOG_CONTRACT_OUTPUT = Join-Path $env:RUNNER_TEMP 'catalog-contract-fixtures'
+          cargo test -p cockpit-tools --lib catalog -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p cockpit-tools --lib model_slots -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p cockpit-tools --lib responses_sync_catalog_with_custom_models -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check generated catalogs with Codex app-server on Windows
+        shell: pwsh
+        run: |
+          $codexExecutable = Join-Path $env:RUNNER_TEMP 'catalog-contract-codex.exe'
+          Invoke-WebRequest 'https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-x86_64-pc-windows-msvc.exe' -OutFile $codexExecutable
+          node scripts/check-codex-model-catalog.cjs $codexExecutable (Join-Path $env:RUNNER_TEMP 'catalog-contract-fixtures')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -LiteralPath $codexExecutable -Force
+
       - name: Build unsigned NSIS installer
         shell: pwsh
         run: |

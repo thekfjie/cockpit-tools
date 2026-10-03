@@ -694,59 +694,19 @@ fn allocate_official_deepseek_shell_slots(
     })
 }
 
-/// Allocate client-visible model shells for upstream provider models.
-///
-/// 1. Official DeepSeek Responses models use a fixed shell whitelist.
-/// 2. Upstream IDs that already match an official shell keep identity.
-/// 3. Remaining models claim free shells in pool order.
-/// 4. If the shell pool is exhausted, keep the upstream ID so nothing is dropped.
+/// Ordinary providers keep their real IDs, independent of list order and Key.
+/// The official DeepSeek protocol retains its fixed compatibility mapping.
 pub(crate) fn allocate_provider_model_slots(models: &[String]) -> Vec<ProviderGatewayModelSlot> {
     if let Some(slots) = allocate_official_deepseek_shell_slots(models) {
         return slots;
     }
-    let upstream_models =
-        normalize_provider_gateway_models(models.iter().map(String::as_str).collect());
-    let mut used_shells = HashSet::new();
-    let mut slots = Vec::new();
-    let mut deferred = Vec::new();
-
-    for upstream_model in upstream_models {
-        if is_provider_model_shell_slug(&upstream_model)
-            && used_shells.insert(upstream_model.to_ascii_lowercase())
-        {
-            slots.push(ProviderGatewayModelSlot {
-                client_model: upstream_model.clone(),
-                upstream_model,
-            });
-        } else {
-            deferred.push(upstream_model);
-        }
-    }
-
-    let free_shells: Vec<&str> = CODEX_PROVIDER_MODEL_SHELL_POOL
-        .iter()
-        .copied()
-        .filter(|shell| !used_shells.contains(&shell.to_ascii_lowercase()))
-        .collect();
-    let mut free_shells = free_shells.into_iter();
-
-    for upstream_model in deferred {
-        if let Some(shell) = free_shells.next() {
-            used_shells.insert(shell.to_ascii_lowercase());
-            slots.push(ProviderGatewayModelSlot {
-                client_model: shell.to_string(),
-                upstream_model,
-            });
-        } else {
-            // Keep listing the model even without a free official shell.
-            slots.push(ProviderGatewayModelSlot {
-                client_model: upstream_model.clone(),
-                upstream_model,
-            });
-        }
-    }
-
-    slots
+    normalize_provider_gateway_models(models.iter().map(String::as_str).collect())
+        .into_iter()
+        .map(|upstream_model| ProviderGatewayModelSlot {
+            client_model: upstream_model.clone(),
+            upstream_model,
+        })
+        .collect()
 }
 
 fn provider_gateway_model_slots(models: &[String]) -> Vec<ProviderGatewayModelSlot> {
@@ -758,7 +718,10 @@ pub(crate) fn provider_model_slots_for_account(
     account: &CodexAccount,
     models: &[String],
 ) -> Vec<ProviderGatewayModelSlot> {
-    if !codex_account::account_uses_raw_provider_model_ids(account) {
+    if !codex_account::account_uses_raw_provider_model_ids(account)
+        && codex_account::is_deepseek_account(account)
+        && provider_gateway_wire_api_for_account(account) == "responses"
+    {
         return allocate_provider_model_slots(models);
     }
     normalize_provider_gateway_models(models.iter().map(String::as_str).collect())
@@ -812,6 +775,10 @@ pub(crate) fn build_provider_model_catalog_json(
                 continue;
             };
             if let Some(slot) = slot {
+                object.insert(
+                    "cockpit_upstream_model".to_string(),
+                    Value::String(slot.upstream_model.clone()),
+                );
                 object.insert(
                     "display_name".to_string(),
                     Value::String(slot.upstream_model.clone()),
@@ -901,8 +868,7 @@ fn merge_previous_provider_catalog_models(
 /// preserves the exact prior gateway metadata (including its upstream display name) forever.
 /// This list covers profiles where a pre-retention Cockpit version had already removed both the
 /// catalog entry and its immediate `.bak` before the user installed the retention fix.
-const LEGACY_PROVIDER_CATALOG_MODEL_IDS: &[&str] =
-    &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const LEGACY_PROVIDER_CATALOG_MODEL_IDS: &[&str] = CODEX_PROVIDER_MODEL_SHELL_POOL;
 
 /// Add built-in metadata for legacy Codex IDs when every local catalog copy has already lost it.
 ///
@@ -945,6 +911,10 @@ fn merge_known_legacy_provider_catalog_models(next_catalog_json: &str) -> Result
     for fallback_model in fallback_models {
         let mut fallback_model = fallback_model.clone();
         if let Some(object) = fallback_model.as_object_mut() {
+            // A missing shell mapping cannot identify the former upstream model.
+            if let Some(slug) = object.get("slug").and_then(Value::as_str).map(str::to_string) {
+                object.insert("display_name".into(), Value::String(slug));
+            }
             object.insert("visibility".to_string(), Value::String("hide".to_string()));
         }
         next_models.push(fallback_model);
@@ -953,7 +923,7 @@ fn merge_known_legacy_provider_catalog_models(next_catalog_json: &str) -> Result
         .map_err(|error| format!("序列化历史 Codex 模型目录失败: {}", error))
 }
 
-fn retain_previous_provider_catalog_models(profile_dir: &Path, content: String) -> String {
+pub(crate) fn retain_previous_provider_catalog_models(profile_dir: &Path, content: String) -> String {
     // The atomic writer keeps the immediately preceding catalog in `.bak`. A prior Cockpit
     // version may already have dropped an old thread's model from the main file, while that
     // backup still contains its user-selected display name and context settings.
@@ -1275,9 +1245,8 @@ pub(crate) fn build_official_template_mapped_catalog_json(
 
 fn apply_provider_gateway_model_slots(
     collection: &mut CodexLocalAccessCollection,
-    models: &[String],
+    slots: &[ProviderGatewayModelSlot],
 ) {
-    let slots = provider_gateway_model_slots(models);
     let client_models: HashSet<String> = slots
         .iter()
         .map(|slot| slot.client_model.to_ascii_lowercase())
@@ -1292,7 +1261,7 @@ fn apply_provider_gateway_model_slots(
     });
     collection
         .model_aliases
-        .extend(slots.into_iter().map(|slot| CodexLocalAccessModelAlias {
+        .extend(slots.iter().cloned().map(|slot| CodexLocalAccessModelAlias {
             source_model: slot.upstream_model,
             alias: slot.client_model,
             fork: false,
@@ -1301,6 +1270,52 @@ fn apply_provider_gateway_model_slots(
     // 不能写进 sidecar 的 oauth-model-alias：否则经 ChatGPT 账号执行的请求（例如生图转发
     // 用的 gpt-5.5 基础模型）会被改写成供应商模型名，被 ChatGPT 后端拒绝。
     collection.suppress_oauth_model_alias = true;
+}
+
+fn retain_provider_gateway_legacy_aliases(
+    profile_dir: &Path,
+    account: &CodexAccount,
+    slots: &[ProviderGatewayModelSlot],
+    collection: &mut CodexLocalAccessCollection,
+) {
+    let path = profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE);
+    let owner = crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&path);
+    let Ok(content) = std::fs::read_to_string(path) else { return; };
+    let Ok(catalog) = serde_json::from_str::<Value>(&content) else { return; };
+    let Some(models) = catalog.get("models").and_then(Value::as_array) else { return; };
+    let definitions = model_provider_key_config_for_account(account)
+        .and_then(|key| key.get("modelDefinitions").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    for model in models {
+        let Some(alias) = model.get("slug").and_then(Value::as_str) else { continue; };
+        if !is_provider_model_shell_slug(alias)
+            || slots.iter().any(|slot| slot.client_model.eq_ignore_ascii_case(alias))
+            || collection.model_aliases.iter().any(|item| item.alias.eq_ignore_ascii_case(alias))
+        { continue; }
+        // New records carry their upstream identity. For old records, a display
+        // name is usable only when the catalog belonged to this exact credential.
+        let upstream = model.get("cockpit_upstream_model").and_then(Value::as_str);
+        let display = model.get("display_name").and_then(Value::as_str);
+        let matches = slots.iter().filter(|slot| {
+            if let Some(upstream) = upstream {
+                return slot.upstream_model.eq_ignore_ascii_case(upstream);
+            }
+            if owner.as_deref() != Some(account.id.as_str()) { return false; }
+            display.is_some_and(|display| {
+                slot.upstream_model.eq_ignore_ascii_case(display)
+                    || definitions.iter().any(|definition| {
+                        definition.get("model_id").and_then(Value::as_str)
+                            .is_some_and(|id| slot.upstream_model.eq_ignore_ascii_case(id))
+                            && definition.get("display_name").and_then(Value::as_str) == Some(display)
+                    })
+            })
+        }).collect::<Vec<_>>();
+        if let [slot] = matches.as_slice() {
+            collection.model_aliases.push(CodexLocalAccessModelAlias {
+                source_model: slot.upstream_model.clone(), alias: alias.into(), fork: false,
+            });
+        }
+    }
 }
 
 fn provider_gateway_wire_api_for_account(account: &CodexAccount) -> String {
@@ -1405,10 +1420,8 @@ fn account_uses_synced_model_shell_gateway(account: &CodexAccount) -> bool {
     if codex_account::account_uses_raw_provider_model_ids(account) {
         return false;
     }
-    // Responses path normally talks to upstream directly. When the synced catalog needs
-    // official shells for UI display, route through provider gateway so requests can be
-    // rewritten back to the real upstream model IDs. DeepSeek official Responses only
-    // uses that rewrite; the sidecar keeps Responses passthrough.
+    // Retain the existing gateway path for custom models even though their IDs
+    // no longer need positional aliases. Official DeepSeek still needs rewriting.
     if provider_gateway_wire_api_for_account(account) != "responses" {
         return false;
     }
@@ -1416,7 +1429,7 @@ fn account_uses_synced_model_shell_gateway(account: &CodexAccount) -> bool {
     if models.is_empty() {
         return false;
     }
-    provider_model_slots_need_upstream_rewrite(&provider_gateway_model_slots(&models))
+    models.iter().any(|model| !is_provider_model_shell_slug(model))
 }
 
 fn is_chat_completions_api_key_account(account: &CodexAccount) -> bool {
@@ -2127,7 +2140,9 @@ fn build_provider_gateway_collection_for_profile(
     }
 
     let provider_gateway = provider_gateway_for_account(account)?;
-    apply_provider_gateway_model_slots(&mut collection, &provider_gateway.upstream_models);
+    let slots = provider_model_slots_for_account(account, &provider_gateway.upstream_models);
+    apply_provider_gateway_model_slots(&mut collection, &slots);
+    retain_provider_gateway_legacy_aliases(profile_dir, account, &slots, &mut collection);
     let key = provider_gateway_profile_api_key(profile_dir, &account.id)?;
     let now = now_ms();
     collection.api_key = key.clone();
@@ -2808,8 +2823,15 @@ pub(crate) fn finalize_provider_gateway_catalog_for_account(
     profile_dir: &Path,
     account: &CodexAccount,
 ) -> Result<(), String> {
+    let config = crate::modules::codex_config_format::load_codex_config_doc(&profile_config_path(profile_dir))?;
+    if config.get("model_catalog_json").and_then(|item| item.as_str())
+        .is_some_and(|reference| !reference.trim().is_empty()
+            && !codex_account::catalog_ref_targets_cockpit_managed_file(reference, profile_dir))
+    {
+        return Err("当前实例使用用户自建模型目录，请先确认模型管理的目录冲突".into());
+    }
     let gateway = provider_gateway_for_account(account)?;
-    let slots = provider_gateway_model_slots(&gateway.upstream_models);
+    let slots = provider_model_slots_for_account(account, &gateway.upstream_models);
     if let Some(default) = preferred_provider_gateway_slot(account, &slots) {
         write_local_access_profile_model_override(profile_dir, &default.client_model)?;
     }
@@ -2827,7 +2849,7 @@ pub(crate) fn build_provider_gateway_catalog_for_account(
     default_limit: Option<i64>,
 ) -> Result<(String, Vec<String>, Option<String>), String> {
     let gateway = provider_gateway_for_account(account)?;
-    let slots = provider_gateway_model_slots(&gateway.upstream_models);
+    let slots = provider_model_slots_for_account(account, &gateway.upstream_models);
     let template = official_catalog_json_for_provider_gateway(account)?;
     let raw = match template.as_deref() {
         Some(template) => build_official_template_mapped_catalog_json(&slots, template)?,
@@ -2868,14 +2890,9 @@ fn write_provider_gateway_model_catalog_with_templates(
     } else {
         codex_account::decorate_managed_model_catalog_for_profile(profile_dir, &content)?
     };
-    let content = retain_previous_provider_catalog_models(profile_dir, content);
-    write_string_atomic(
+    crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
         &profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
         &content,
-    )
-    .map_err(|e| format!("写入 Codex 模型目录失败: {}", e))?;
-    crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta_for_gateway(
-        &profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
         account.filter(|account| account.is_api_key_auth()).map(|account| account.id.as_str()),
     )?;
     codex_account::cleanup_legacy_managed_model_catalogs(profile_dir);
@@ -3095,7 +3112,7 @@ pub async fn activate_provider_gateway_for_dir(
         .ok_or_else(|| format!("供应商网关账号不存在: {}", account_id))?;
     let (collection, key, provider_gateway) =
         build_provider_gateway_collection_for_profile(profile_dir, &account)?;
-    let model_slots = provider_gateway_model_slots(&provider_gateway.upstream_models);
+    let model_slots = provider_model_slots_for_account(&account, &provider_gateway.upstream_models);
     save_profile_takeover_backup(profile_dir, &key)?;
     write_local_access_profile_takeover(profile_dir, &collection, Some(&key), false).await?;
     cleanup_provider_gateway_profile_model_overrides(profile_dir)?;
@@ -3627,7 +3644,7 @@ pub async fn ensure_provider_gateway_for_dir(
     release_occupied_provider_gateway_profile_port(profile_dir, account_id).await;
     let (collection, key, provider_gateway) =
         build_provider_gateway_collection_for_profile(profile_dir, &account)?;
-    let model_slots = provider_gateway_model_slots(&provider_gateway.upstream_models);
+    let model_slots = provider_model_slots_for_account(&account, &provider_gateway.upstream_models);
     save_profile_takeover_backup(profile_dir, &key)?;
     write_local_access_profile_takeover(profile_dir, &collection, Some(&key), false).await?;
     cleanup_provider_gateway_profile_model_overrides(profile_dir)?;

@@ -2036,17 +2036,9 @@ fn write_local_access_profile_client_models(
     // startup and passive reconciliation must use the same final values.
     let content = codex_account::decorate_managed_model_catalog_for_profile(profile_dir, &content)?;
     let catalog_file = CODEX_MANAGED_MODEL_CATALOG_FILE;
-    let catalog_changed = write_string_atomic_if_changed(&profile_dir.join(catalog_file), &content)
-        .map_err(|e| format!("写入 Codex API 服务模型目录失败: {}", e))?;
-    if let Err(err) = crate::modules::codex_managed_model_catalog_version::write_managed_catalog_meta(
-        &profile_dir.join(catalog_file),
-    ) {
-        logger::log_codex_api_warn(&format!(
-            "[Codex模型目录] 写入 API 服务模型目录版本戳失败: path={}, error={}",
-            profile_dir.join(catalog_file).display(),
-            err
-        ));
-    }
+    let catalog_changed = crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
+        &profile_dir.join(catalog_file), &content, None,
+    ).map_err(|e| format!("写入 Codex API 服务模型目录失败: {}", e))?;
     codex_account::cleanup_legacy_managed_model_catalogs(profile_dir);
     if catalog_changed {
         invalidate_codex_model_cache(profile_dir)?;

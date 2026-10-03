@@ -207,7 +207,7 @@
             .iter()
             .find(|model| model["slug"] == "gpt-5.6-terra")
             .expect("legacy model stays resolvable");
-        assert_eq!(terra["display_name"], "GPT-5.6 Terra");
+        assert_eq!(terra["display_name"], "gpt-5.6-terra");
         assert_eq!(terra["visibility"], "hide");
         assert_eq!(
             models
@@ -2221,21 +2221,20 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings
                 .map(|slot| (slot.client_model.as_str(), slot.upstream_model.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("gpt-5.5", "gpt-5.5"),
-                ("gpt-5.6-sol", "deepseek-v4-pro"),
-                ("gpt-5.6-terra", "deepseek-v4-flash"),
-                ("gpt-5.6-luna", "deepseek-v4-lite"),
+                ("deepseek-v4-pro", "deepseek-v4-pro"),
+                ("deepseek-v4-flash", "deepseek-v4-flash"),
+                ("deepseek-v4-lite", "deepseek-v4-lite"),
                 ("deepseek-v4-extra", "deepseek-v4-extra"),
+                ("gpt-5.5", "gpt-5.5"),
                 ("custom-overflow-a", "custom-overflow-a"),
                 ("custom-overflow-b", "custom-overflow-b"),
                 ("custom-overflow-c", "custom-overflow-c"),
                 ("custom-overflow-d", "custom-overflow-d"),
-                // Shell pool exhausted: keep upstream IDs so all models remain listed.
                 ("custom-overflow-e", "custom-overflow-e"),
                 ("custom-overflow-f", "custom-overflow-f"),
             ]
         );
-        assert!(provider_model_slots_need_upstream_rewrite(&slots));
+        assert!(!provider_model_slots_need_upstream_rewrite(&slots));
     }
 
     #[test]
@@ -2253,9 +2252,49 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings
             vec![
                 ("gpt-5.6-sol", "gpt-5.6-sol"),
                 ("gpt-5.5", "gpt-5.5"),
-                ("gpt-5.6-terra", "grok-4.5"),
+                ("grok-4.5", "grok-4.5"),
             ]
         );
+    }
+
+    #[test]
+    fn provider_model_slots_preserve_arbitrary_ids_across_list_reordering() {
+        let mut account = CodexAccount::new_api_key("raw-id-test".into(), "test@example.com".into(),
+            "not-a-secret".into(), CodexApiProviderMode::Custom, Some("https://relay.example/v1".into()),
+            Some("relay".into()), Some("Relay".into()), vec![]);
+        account.api_wire_api = Some("responses".into());
+        let ids = ["kimi-k3-1", "glm-5.3", "deepseek-v4-pro", "vendor/model-v9", "gpt-6.1-sol"];
+        for models in [ids.to_vec(), ids.iter().rev().copied().collect::<Vec<_>>()] {
+            let slots = super::provider_model_slots_for_account(&account, &models.into_iter().map(str::to_string).collect::<Vec<_>>());
+            assert_eq!(slots.len(), ids.len());
+            assert!(slots.iter().all(|slot| slot.client_model == slot.upstream_model));
+        }
+        let only_deepseek = super::provider_model_slots_for_account(&account, &["deepseek-v4-pro".into()]);
+        assert_eq!(only_deepseek[0].client_model, "deepseek-v4-pro", "a relay must not acquire official DeepSeek shells");
+    }
+
+    #[test]
+    fn legacy_catalog_alias_routes_only_to_its_proven_upstream_identity() {
+        let dir = std::env::temp_dir().join(format!("catalog-alias-{}-{}", std::process::id(), chrono::Utc::now().timestamp_micros()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut account = CodexAccount::new_api_key("key-third".into(), "test@example.com".into(), "test-key".into(),
+            CodexApiProviderMode::Custom, Some("https://relay.example/v1".into()), Some("relay".into()), Some("Relay".into()), vec![]);
+        account.api_wire_api = Some("responses".into());
+        let slots = super::provider_model_slots_for_account(&account, &["kimi-k3-1".into(), "glm-5.3".into()]);
+        crate::modules::codex_managed_model_catalog_version::write_managed_model_catalog(
+            &dir.join("cockpit-model-catalog.json"),
+            r#"{"models":[{"slug":"gpt-5.6-terra","display_name":"kimi-k3-1","visibility":"list"}]}"#, Some("key-third"),
+        ).unwrap();
+        let mut collection = super::new_empty_local_access_collection().unwrap();
+        super::apply_provider_gateway_model_slots(&mut collection, &slots);
+        super::retain_provider_gateway_legacy_aliases(&dir, &account, &slots, &mut collection);
+        assert!(collection.model_aliases.iter().any(|alias| alias.alias == "gpt-5.6-terra" && alias.source_model == "kimi-k3-1"));
+        account.id = "different-key".into();
+        let mut other = super::new_empty_local_access_collection().unwrap();
+        super::apply_provider_gateway_model_slots(&mut other, &slots);
+        super::retain_provider_gateway_legacy_aliases(&dir, &account, &slots, &mut other);
+        assert!(!other.model_aliases.iter().any(|alias| alias.alias == "gpt-5.6-terra"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
