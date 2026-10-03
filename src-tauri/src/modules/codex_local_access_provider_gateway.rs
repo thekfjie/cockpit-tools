@@ -895,6 +895,64 @@ fn merge_previous_provider_catalog_models(
         .map_err(|error| format!("序列化合并后的 provider 模型目录失败: {}", error))
 }
 
+/// Known Codex model IDs from the catalog that shipped before the GPT-6 family.
+///
+/// These are only a migration fallback. Normally `retain_previous_provider_catalog_models`
+/// preserves the exact prior gateway metadata (including its upstream display name) forever.
+/// This list covers profiles where a pre-retention Cockpit version had already removed both the
+/// catalog entry and its immediate `.bak` before the user installed the retention fix.
+const LEGACY_PROVIDER_CATALOG_MODEL_IDS: &[&str] =
+    &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+/// Add built-in metadata for legacy Codex IDs when every local catalog copy has already lost it.
+///
+/// The entries are hidden compatibility records: they do not join the active Key's picker or
+/// routing slots. Their only job is to let an existing Codex thread render a known historical
+/// model as its normal Codex name rather than the generic “Custom” label. We intentionally do
+/// not infer a third-party upstream model here, because the saved thread only carries its Codex
+/// client model ID and not the former shell-to-upstream mapping.
+fn merge_known_legacy_provider_catalog_models(next_catalog_json: &str) -> Result<String, String> {
+    let mut next_catalog: Value = serde_json::from_str(next_catalog_json)
+        .map_err(|error| format!("解析 provider 模型目录失败: {}", error))?;
+    let existing: HashSet<String> = next_catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .map(|slug| slug.trim().to_ascii_lowercase())
+        .filter(|slug| !slug.is_empty())
+        .collect();
+    let fallback_ids = LEGACY_PROVIDER_CATALOG_MODEL_IDS
+        .iter()
+        .filter(|model_id| !existing.contains(&model_id.to_ascii_lowercase()))
+        .map(|model_id| (*model_id).to_string())
+        .collect::<Vec<_>>();
+    if fallback_ids.is_empty() {
+        return Ok(next_catalog_json.to_string());
+    }
+
+    let fallback_catalog =
+        crate::modules::codex_protocol::build_codex_client_models_response(&fallback_ids);
+    let fallback_models = fallback_catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "历史 Codex 模型目录缺少 models 数组".to_string())?;
+    let next_models = next_catalog
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "新 provider 模型目录缺少 models 数组".to_string())?;
+    for fallback_model in fallback_models {
+        let mut fallback_model = fallback_model.clone();
+        if let Some(object) = fallback_model.as_object_mut() {
+            object.insert("visibility".to_string(), Value::String("hide".to_string()));
+        }
+        next_models.push(fallback_model);
+    }
+    serde_json::to_string_pretty(&next_catalog)
+        .map_err(|error| format!("序列化历史 Codex 模型目录失败: {}", error))
+}
+
 fn retain_previous_provider_catalog_models(profile_dir: &Path, content: String) -> String {
     // The atomic writer keeps the immediately preceding catalog in `.bak`. A prior Cockpit
     // version may already have dropped an old thread's model from the main file, while that
@@ -912,7 +970,7 @@ fn retain_previous_provider_catalog_models(profile_dir: &Path, content: String) 
             merged = next_catalog;
         }
     }
-    merged
+    merge_known_legacy_provider_catalog_models(&merged).unwrap_or(merged)
 }
 
 /// Provider 网关里第三方未知模型的保守兜底上下文窗口。

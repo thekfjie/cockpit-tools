@@ -187,6 +187,45 @@
     }
 
     #[test]
+    fn known_legacy_model_keeps_old_thread_label_when_catalog_history_is_gone() {
+        let next = r#"{
+            "models": [{
+                "slug": "gpt-6.1-sol",
+                "display_name": "GPT-6.1 Sol",
+                "visibility": "list",
+                "context_window": 300000,
+                "auto_compact_token_limit": 276000
+            }]
+        }"#;
+        let catalog: serde_json::Value = serde_json::from_str(
+            &super::merge_known_legacy_provider_catalog_models(next)
+                .expect("add known legacy catalog entries"),
+        )
+        .expect("parse compatibility catalog");
+        let models = catalog["models"].as_array().expect("catalog models");
+        let terra = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-5.6-terra")
+            .expect("legacy model stays resolvable");
+        assert_eq!(terra["display_name"], "GPT-5.6 Terra");
+        assert_eq!(terra["visibility"], "hide");
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model["slug"] == "gpt-5.6-terra")
+                .count(),
+            1
+        );
+
+        let active = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-6.1-sol")
+            .expect("active Key model remains present");
+        assert_eq!(active["display_name"], "GPT-6.1 Sol");
+        assert_eq!(active["visibility"], "list");
+    }
+
+    #[test]
     fn sidecar_scheduler_state_expires_without_stale_page_cooldown() {
         let now = 1_000_000_i64;
         let mut runtime = super::GatewayRuntime::default();
