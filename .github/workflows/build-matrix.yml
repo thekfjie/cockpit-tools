@@ -2,6 +2,12 @@ name: Windows Maintenance Build
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_regression:
+        description: Skip the Linux regression suite and build the Windows package only.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: windows-maintenance-${{ github.ref }}
@@ -10,6 +16,7 @@ concurrency:
 jobs:
   regression:
     name: Full regression suite
+    if: ${{ !inputs.skip_regression }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -78,6 +85,7 @@ jobs:
   windows-package:
     name: Windows installer
     needs: regression
+    if: ${{ always() && (needs.regression.result == 'success' || needs.regression.result == 'skipped') }}
     runs-on: windows-latest
     permissions:
       contents: read
@@ -130,13 +138,32 @@ jobs:
           if-no-files-found: warn
           path: build-windows.log
 
+      - name: Collect Windows installer and executable
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $env:RUNNER_TEMP 'cockpit-tools-windows-maintenance'
+          Remove-Item -LiteralPath $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+          $installers = Get-ChildItem -Path 'target/release/bundle/nsis' -Filter '*.exe' -File
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $outputDir
+
+          $executable = @(
+            'target/release/cockpit-tools.exe',
+            'target/release/cockpit_tools.exe'
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $executable) {
+            throw 'Cockpit Tools executable was not produced.'
+          }
+          Copy-Item -LiteralPath $executable -Destination $outputDir
+
       - name: Upload Windows installer and executable
         uses: actions/upload-artifact@v4
         with:
           name: cockpit-tools-windows-maintenance
           retention-days: 14
           if-no-files-found: error
-          path: |
-            target/release/bundle/nsis/*.exe
-            target/release/cockpit-tools.exe
-            target/release/cockpit_tools.exe
+          path: ${{ runner.temp }}/cockpit-tools-windows-maintenance/*
