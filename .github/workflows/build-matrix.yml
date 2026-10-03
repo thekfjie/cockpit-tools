@@ -127,7 +127,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run test:release
+          $releaseTests = @(Get-ChildItem -LiteralPath 'scripts/release' -Filter '*.test.cjs' -File | Select-Object -ExpandProperty FullName)
+          node --test @releaseTests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check_locales.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
