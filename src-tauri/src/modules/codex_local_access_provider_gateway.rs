@@ -848,6 +848,9 @@ fn merge_previous_provider_catalog_models(
         }
         let mut retained_model = previous_model.clone();
         if let Some(object) = retained_model.as_object_mut() {
+            if !object.contains_key("cockpit_account_id") {
+                object.insert("cockpit_account_id".into(), previous_catalog.get("cockpit_account_id").cloned().unwrap_or(Value::Null));
+            }
             object.insert("visibility".to_string(), Value::String("hide".to_string()));
         }
         retained.push(retained_model);
@@ -933,9 +936,15 @@ pub(crate) fn retain_previous_provider_catalog_models(profile_dir: &Path, conten
     ];
     let mut merged = content;
     for path in paths {
-        let Ok(previous_catalog) = std::fs::read_to_string(path) else {
+        let Ok(previous_catalog) = std::fs::read_to_string(&path) else {
             continue;
         };
+        let previous_catalog = if let Some(owner) = crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&path) {
+            serde_json::from_str::<Value>(&previous_catalog).ok().and_then(|mut catalog| {
+                catalog["cockpit_account_id"] = owner.into();
+                serde_json::to_string(&catalog).ok()
+            }).unwrap_or(previous_catalog)
+        } else { previous_catalog };
         if let Ok(next_catalog) = merge_previous_provider_catalog_models(&merged, &previous_catalog) {
             merged = next_catalog;
         }
@@ -1296,11 +1305,16 @@ fn retain_provider_gateway_legacy_aliases(
         // name is usable only when the catalog belonged to this exact credential.
         let upstream = model.get("cockpit_upstream_model").and_then(Value::as_str);
         let display = model.get("display_name").and_then(Value::as_str);
+        let record_owner = if let Some(owner) = model.get("cockpit_account_id") {
+            owner.as_str()
+        } else if model.get("visibility").and_then(Value::as_str) != Some("hide") {
+            owner.as_deref()
+        } else { None };
         let matches = slots.iter().filter(|slot| {
             if let Some(upstream) = upstream {
                 return slot.upstream_model.eq_ignore_ascii_case(upstream);
             }
-            if owner.as_deref() != Some(account.id.as_str()) { return false; }
+            if record_owner != Some(account.id.as_str()) { return false; }
             display.is_some_and(|display| {
                 slot.upstream_model.eq_ignore_ascii_case(display)
                     || definitions.iter().any(|definition| {

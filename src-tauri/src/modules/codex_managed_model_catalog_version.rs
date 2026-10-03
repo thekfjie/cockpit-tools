@@ -83,6 +83,9 @@ pub(crate) fn write_managed_model_catalog(
     // Store ownership with the catalog itself, so a crash between catalog and meta
     // writes cannot assign the new Key's models to the previous Key.
     parsed["cockpit_account_id"] = account_id.map_or(serde_json::Value::Null, |id| id.into());
+    for model in parsed["models"].as_array_mut().expect("validated models array") {
+        model["cockpit_account_id"] = account_id.map_or(serde_json::Value::Null, |id| id.into());
+    }
     let serialized = serde_json::to_string_pretty(&parsed).map_err(|error| error.to_string())?;
     let content = crate::modules::codex_local_access::retain_previous_provider_catalog_models(
         profile_dir, serialized,
@@ -191,6 +194,21 @@ mod tests {
         write(&catalog, "{\"models\":[{\"slug\":\"grok-4.6\"}]}");
         assert!(managed_catalog_needs_rebuild(&catalog));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn catalog_config_reconcile_does_not_rotate_unchanged_backup() {
+        let dir = std::env::temp_dir().join(format!("catalog-config-{}-{}", std::process::id(), chrono::Utc::now().timestamp_micros()));
+        fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.toml");
+        crate::modules::codex_config_format::write_codex_config_toml_atomic(&config, "model = \"kimi-k3-1\"\n").unwrap();
+        let next = "model = \"glm-5.3\"\n";
+        crate::modules::codex_config_format::write_codex_config_toml_atomic(&config, next).unwrap();
+        let backup = fs::read(config.with_extension("toml.bak")).unwrap();
+        crate::modules::codex_config_format::write_codex_config_toml_atomic(&config, next).unwrap();
+        assert_eq!(fs::read(config.with_extension("toml.bak")).unwrap(), backup);
+        assert_eq!(fs::read_to_string(config).unwrap(), next);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
