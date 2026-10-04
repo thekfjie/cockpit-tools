@@ -2832,8 +2832,7 @@ fn write_provider_gateway_model_catalog(
     write_provider_gateway_model_catalog_with_templates(profile_dir, slots, None, None)
 }
 
-/// Shared by activation and launch so tests exercise the actual final write order.
-pub(crate) fn finalize_provider_gateway_catalog_for_account(
+fn validate_provider_gateway_catalog_before_projection(
     profile_dir: &Path,
     account: &CodexAccount,
 ) -> Result<(), String> {
@@ -2844,6 +2843,18 @@ pub(crate) fn finalize_provider_gateway_catalog_for_account(
     {
         return Err("当前实例使用用户自建模型目录，请先确认模型管理的目录冲突".into());
     }
+    build_provider_gateway_catalog_for_account(
+        account, read_toml_model_context_window(&config), read_toml_model_auto_compact_token_limit(&config),
+    )?;
+    Ok(())
+}
+
+/// Shared by activation and launch so tests exercise the actual final write order.
+pub(crate) fn finalize_provider_gateway_catalog_for_account(
+    profile_dir: &Path,
+    account: &CodexAccount,
+) -> Result<(), String> {
+    validate_provider_gateway_catalog_before_projection(profile_dir, account)?;
     let gateway = provider_gateway_for_account(account)?;
     let slots = provider_model_slots_for_account(account, &gateway.upstream_models);
     if let Some(default) = preferred_provider_gateway_slot(account, &slots) {
@@ -3123,6 +3134,7 @@ pub async fn activate_provider_gateway_for_dir(
 
     let account = codex_account::load_account(account_id)
         .ok_or_else(|| format!("供应商网关账号不存在: {}", account_id))?;
+    validate_provider_gateway_catalog_before_projection(profile_dir, &account)?;
     let (collection, key, provider_gateway) =
         build_provider_gateway_collection_for_profile(profile_dir, &account)?;
     let model_slots = provider_model_slots_for_account(&account, &provider_gateway.upstream_models);
@@ -3652,6 +3664,7 @@ pub async fn ensure_provider_gateway_for_dir(
     let _guard = provider_gateway_lifecycle_lock().lock().await;
     let account = codex_account::load_account(account_id)
         .ok_or_else(|| format!("供应商网关账号不存在: {}", account_id))?;
+    validate_provider_gateway_catalog_before_projection(profile_dir, &account)?;
     // 持久端口可能已被其它实例/进程占用：先放弃该端口，下面的构建会重新分配一个空闲端口，
     // 避免带着冲突端口启动 sidecar 失败后，后续每次尝试都继续失败。
     release_occupied_provider_gateway_profile_port(profile_dir, account_id).await;

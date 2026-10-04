@@ -1661,6 +1661,10 @@
         let error = write_quick_config_to_config_toml(&base_dir, Some(1_000_000), Some(900_000), Some(true), None).unwrap_err();
         assert!(error.contains("glm") || error.contains("阈值"), "{}", error);
         assert_eq!(fs::read(base_dir.join("config.toml")).unwrap(), before, "invalid limits must not change config");
+        let catalog_before = fs::read(&catalog_path).unwrap();
+        assert!(crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &third).is_err());
+        assert_eq!(fs::read(base_dir.join("config.toml")).unwrap(), before, "gateway preflight must precede config projection");
+        assert_eq!(fs::read(&catalog_path).unwrap(), catalog_before, "invalid gateway limits must not change the catalog");
         super::cleanup_experimental_model_catalog_for_dir(&base_dir).unwrap();
         crate::modules::codex_local_access::finalize_provider_gateway_catalog_for_account(&base_dir, &oai).unwrap();
         assert_eq!(crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&catalog_path).as_deref(), Some("oai"));
