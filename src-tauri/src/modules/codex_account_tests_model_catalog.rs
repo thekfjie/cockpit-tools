@@ -2084,10 +2084,27 @@ multi_agent = true
             fs::read_to_string(managed_dir.join(catalog_file)).expect("read managed catalog");
         let baseline_catalog =
             fs::read_to_string(baseline_dir.join(catalog_file)).expect("read baseline catalog");
+        let managed: serde_json::Value = serde_json::from_str(&managed_catalog).unwrap();
+        let baseline: serde_json::Value = serde_json::from_str(&baseline_catalog).unwrap();
+        let visible_models = |catalog: &serde_json::Value| {
+            catalog["models"].as_array().unwrap().iter()
+                .filter(|model| model["visibility"] != "hide")
+                .cloned().collect::<Vec<_>>()
+        };
         assert_eq!(
-            managed_catalog, baseline_catalog,
+            visible_models(&managed), visible_models(&baseline),
             "第三方账号的模型目录不能受模型管理影响"
         );
+        assert_eq!(managed["cockpit_account_id"], baseline["cockpit_account_id"]);
+        for definition in &definitions {
+            let historical = managed["models"].as_array().unwrap().iter()
+                .find(|model| model["slug"] == definition.model_id)
+                .expect("previous instance model must remain resolvable");
+            if !visible_models(&baseline).iter().any(|model| model["slug"] == definition.model_id) {
+                assert_eq!(historical["visibility"], "hide");
+                assert_eq!(historical["display_name"], definition.display_name);
+            }
+        }
         assert!(policy_path.is_file(), "API Key 账号不能改动模型管理开关");
         let definitions_after = super::read_experimental_model_definitions(&managed_dir);
         assert_eq!(

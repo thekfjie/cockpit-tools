@@ -306,6 +306,7 @@
         let catalog_models = catalog["models"].as_array().expect("catalog models");
         let listed_gpt_slugs = catalog_models
             .iter()
+            .filter(|model| model["visibility"] != "hide")
             .filter_map(|model| model.get("slug").and_then(Value::as_str))
             .filter(|slug| slug.starts_with("gpt-") && !slug.starts_with("gpt-image"))
             .collect::<Vec<_>>();
@@ -1965,10 +1966,11 @@
             "账号池无 GPT 能力时不应展示官方 GPT 模型: {listed:?}"
         );
         // 账号池里没有任何能承接官方模型的账号：连额度兜底条目也不再保留。
-        let gpt_slugs = slugs
+        let gpt_slugs = catalog["models"].as_array().unwrap()
             .iter()
+            .filter(|model| model["visibility"] != "hide")
+            .filter_map(|model| model["slug"].as_str())
             .filter(|slug| slug.starts_with("gpt-") && !slug.starts_with("gpt-image"))
-            .map(String::as_str)
             .collect::<Vec<_>>();
         assert!(
             gpt_slugs.is_empty(),

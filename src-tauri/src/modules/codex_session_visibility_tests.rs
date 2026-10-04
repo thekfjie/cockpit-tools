@@ -1071,6 +1071,7 @@ use super::*;
         .expect("collect rollout changes");
         assert_eq!(changes.len(), 1);
 
+        drop(connection);
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
 

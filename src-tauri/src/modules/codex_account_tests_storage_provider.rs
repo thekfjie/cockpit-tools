@@ -1956,9 +1956,8 @@ supports_websockets = false
 
         let config = fs::read_to_string(base_dir.join("config.toml")).expect("read config");
         assert!(config.contains("model_catalog_json = \"cockpit-model-catalog.json\""));
-        // Catalog sync maps custom display models onto official slugs. HTTP-only relays
-        // must keep their managed provider so supports_websockets=false stays effective.
-        assert!(config.contains("model = \"gpt-5.6-sol\""));
+        // Custom model IDs stay stable; HTTP-only relays retain their managed provider.
+        assert!(config.contains("model = \"custom-a\""));
         assert!(config.contains("model_provider = \"codex_local_access\""));
         assert!(config.contains("base_url = \"https://relay.example.com/v1\""));
         assert!(config.contains("supports_websockets = false"));
@@ -1973,7 +1972,7 @@ supports_websockets = false
             .and_then(serde_json::Value::as_array)
             .expect("models should be an array");
         assert!(models.iter().any(|model| {
-            model.get("slug").and_then(serde_json::Value::as_str) == Some("gpt-5.6-sol")
+            model.get("slug").and_then(serde_json::Value::as_str) == Some("custom-a")
                 && model
                     .get("display_name")
                     .and_then(serde_json::Value::as_str)
@@ -1981,7 +1980,7 @@ supports_websockets = false
                 && model.get("visibility").and_then(serde_json::Value::as_str) == Some("list")
         }));
         assert!(models.iter().any(|model| {
-            model.get("slug").and_then(serde_json::Value::as_str) == Some("gpt-5.6-terra")
+            model.get("slug").and_then(serde_json::Value::as_str) == Some("custom-b")
                 && model
                     .get("display_name")
                     .and_then(serde_json::Value::as_str)
@@ -2112,9 +2111,8 @@ supports_websockets = false
             .expect("write multi-instance account projection");
         let config = fs::read_to_string(profile_dir.join("config.toml")).expect("read config");
         assert!(config.contains("model_catalog_json = \"cockpit-model-catalog.json\""));
-        // Catalog sync maps custom display models onto official slugs. HTTP-only relays
-        // must keep their managed provider so supports_websockets=false stays effective.
-        assert!(config.contains("model = \"gpt-5.6-sol\""));
+        // Updating the Key must select its new real model ID, without positional aliases.
+        assert!(config.contains("model = \"custom-b\""));
         assert!(config.contains("model_provider = \"codex_local_access\""));
         assert!(config.contains("base_url = \"https://relay.example.com/v1\""));
         assert!(config.contains("supports_websockets = false"));
