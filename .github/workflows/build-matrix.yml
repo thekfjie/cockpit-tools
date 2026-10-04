@@ -140,6 +140,7 @@ jobs:
           cargo test -p cockpit-tools --lib --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $testExe = Get-ChildItem -Path 'target/debug/deps' -Filter 'antigravity_cockpit_tools_lib-*.exe' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $testExe) { throw 'Rust model regression executable was not produced.' }
           $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
           $manifestTool = Get-ChildItem -Path "$sdkRoot/*/x64/mt.exe" -File | Sort-Object FullName -Descending | Select-Object -First 1
           $manifestPath = Join-Path $env:RUNNER_TEMP 'cockpit-model-test.manifest'
@@ -156,7 +157,15 @@ jobs:
           '@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
           & $manifestTool.FullName -nologo -manifest $manifestPath "-outputresource:$($testExe.FullName);#1"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p cockpit-tools --lib catalog -- --test-threads=1
+          $embeddedManifest = Join-Path $env:RUNNER_TEMP 'cockpit-model-test.embedded.manifest'
+          & $manifestTool.FullName -nologo "-inputresource:$($testExe.FullName);#1" "-out:$embeddedManifest"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content -LiteralPath $embeddedManifest -Raw) -notmatch 'Microsoft.Windows.Common-Controls') {
+            throw 'Rust test executable is missing the Common Controls v6 manifest.'
+          }
+          $env:PATH = "$(Resolve-Path 'target/debug/deps');$(Resolve-Path 'target/debug');$env:PATH"
+          # Running Cargo again can relink the test executable and discard its manifest.
+          & $testExe.FullName catalog --test-threads=1
           if ($LASTEXITCODE -ne 0) {
             $testExit = $LASTEXITCODE
             $testExe = Get-ChildItem -Path 'target/debug/deps' -Filter 'antigravity_cockpit_tools_lib-*.exe' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -190,11 +199,11 @@ jobs:
             if ($module -ne [IntPtr]::Zero) { [void][CatalogLoaderProbe]::FreeLibrary($module) }
             exit $testExit
           }
-          cargo test -p cockpit-tools --lib model_slots -- --test-threads=1
+          & $testExe.FullName model_slots --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p cockpit-tools --lib legacy_catalog_alias -- --test-threads=1
+          & $testExe.FullName legacy_catalog_alias --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p cockpit-tools --lib responses_sync_catalog_with_custom_models -- --test-threads=1
+          & $testExe.FullName responses_sync_catalog_with_custom_models --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check generated catalogs with Codex app-server on Windows
