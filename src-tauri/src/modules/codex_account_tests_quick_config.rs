@@ -1603,6 +1603,15 @@
         }).to_string()).unwrap();
         super::rebuild_managed_catalog_from_existing(&catalog_path).unwrap();
         assert_third();
+        let mut direct_doc = crate::modules::codex_config_format::load_codex_config_doc(&base_dir.join("config.toml")).unwrap();
+        direct_doc["model_provider"] = toml_edit::value("relay");
+        let direct_content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut direct_doc);
+        crate::modules::codex_config_format::write_codex_config_toml_atomic(&base_dir.join("config.toml"), &direct_content).unwrap();
+        super::rebuild_managed_catalog_from_existing(&catalog_path).unwrap();
+        assert_third();
+        direct_doc["model_provider"] = toml_edit::value("codex_local_access");
+        let direct_content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut direct_doc);
+        crate::modules::codex_config_format::write_codex_config_toml_atomic(&base_dir.join("config.toml"), &direct_content).unwrap();
         assert_eq!(crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(&catalog_path).as_deref(), Some("third"));
         let other = env.home_dir.join("other-profile");
         fs::create_dir_all(&other).unwrap();
@@ -1678,6 +1687,14 @@
         let catalog: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(catalog["models"][0]["context_window"], 256000);
         assert_eq!(catalog["models"][0]["auto_compact_token_limit"], 230000);
+        let historical = serde_json::json!({"models":[
+            {"slug":"custom-model","display_name":"Legacy Key","visibility":"list","context_window":256000,"auto_compact_token_limit":230000},
+            {"slug":"old-vendor-id","display_name":"Older Vendor","visibility":"hide","context_window":128000,"auto_compact_token_limit":110000}
+        ]});
+        fs::write(&path, historical.to_string()).unwrap();
+        super::rebuild_managed_catalog_from_existing(&path).unwrap();
+        let rebuilt: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(rebuilt["models"].as_array().unwrap().iter().find(|model| model["slug"] == "old-vendor-id").unwrap()["visibility"], "hide");
         fs::remove_dir_all(base_dir).unwrap();
     }
 

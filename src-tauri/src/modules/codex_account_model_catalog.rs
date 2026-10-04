@@ -1463,13 +1463,18 @@ fn inspect_experimental_model_catalog(
 }
 
 fn gateway_catalog_owner_for_doc(base_dir: &Path, doc: &Document) -> Option<String> {
-    if doc.get(CODEX_CONFIG_MODEL_PROVIDER_KEY).and_then(|item| item.as_str())
-        != Some(CODEX_RUNTIME_MODEL_PROVIDER_ID) { return None; }
     let reference = doc.get(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY)?.as_str()?;
     if !catalog_ref_targets_cockpit_managed_file(reference, base_dir) { return None; }
     if let Some(owner) = crate::modules::codex_managed_model_catalog_version::managed_catalog_gateway_account_id(
         &base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE),
     ) { return Some(owner); }
+    let catalog = fs::read_to_string(base_dir.join(CODEX_MANAGED_MODEL_CATALOG_FILE)).ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+    if catalog.as_ref().is_some_and(|catalog| catalog.get("cockpit_account_id").is_some()) {
+        return None; // An explicit null owner is an instance/pool catalog.
+    }
+    if doc.get(CODEX_CONFIG_MODEL_PROVIDER_KEY).and_then(|item| item.as_str())
+        != Some(CODEX_RUNTIME_MODEL_PROVIDER_ID) { return None; }
     // Older writers dropped the owner stamp. Recover only the account explicitly
     // bound to this profile, without normalizing or rewriting the instance store.
     let store = crate::modules::account::get_data_dir().ok()
@@ -2997,6 +3002,7 @@ fn rebuild_managed_catalog_from_existing(catalog_path: &Path) -> Result<(), Stri
         .unwrap_or_default();
     let model_ids = old_models
         .iter()
+        .filter(|model| model.get("visibility").and_then(JsonValue::as_str) != Some("hide"))
         .filter_map(|model| model.get("slug").and_then(JsonValue::as_str).map(str::to_string))
         .collect::<Vec<_>>();
     if model_ids.is_empty() {
