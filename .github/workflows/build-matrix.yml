@@ -137,6 +137,25 @@ jobs:
         shell: pwsh
         run: |
           $env:COCKPIT_CATALOG_CONTRACT_OUTPUT = Join-Path $env:RUNNER_TEMP 'catalog-contract-fixtures'
+          cargo test -p cockpit-tools --lib --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $testExe = Get-ChildItem -Path 'target/debug/deps' -Filter 'antigravity_cockpit_tools_lib-*.exe' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $manifestTool = Get-ChildItem -Path "$sdkRoot/*/x64/mt.exe" -File | Sort-Object FullName -Descending | Select-Object -First 1
+          $manifestPath = Join-Path $env:RUNNER_TEMP 'cockpit-model-test.manifest'
+          @'
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <assemblyIdentity type="win32" name="Cockpit.ModelCatalogTests" version="1.0.0.0" processorArchitecture="amd64" />
+            <dependency>
+              <dependentAssembly>
+                <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*" />
+              </dependentAssembly>
+            </dependency>
+          </assembly>
+          '@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          & $manifestTool.FullName -nologo -manifest $manifestPath "-outputresource:$($testExe.FullName);#1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p cockpit-tools --lib catalog -- --test-threads=1
           if ($LASTEXITCODE -ne 0) {
             $testExit = $LASTEXITCODE
@@ -172,6 +191,8 @@ jobs:
             exit $testExit
           }
           cargo test -p cockpit-tools --lib model_slots -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p cockpit-tools --lib legacy_catalog_alias -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p cockpit-tools --lib responses_sync_catalog_with_custom_models -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

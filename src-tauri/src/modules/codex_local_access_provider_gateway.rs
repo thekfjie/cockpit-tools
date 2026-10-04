@@ -713,7 +713,7 @@ fn provider_gateway_model_slots(models: &[String]) -> Vec<ProviderGatewayModelSl
     allocate_provider_model_slots(models)
 }
 
-/// 账号的客户端可见模型槽位：直连上游 / CDP 注入用上游真实 ID，其余按官方壳位分配。
+/// Stable upstream IDs for ordinary providers; fixed shells only for official DeepSeek.
 pub(crate) fn provider_model_slots_for_account(
     account: &CodexAccount,
     models: &[String],
