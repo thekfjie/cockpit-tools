@@ -98,6 +98,16 @@ pub(crate) fn write_managed_model_catalog(
     Ok(changed)
 }
 
+pub(crate) fn archive_and_remove_managed_catalog(catalog_path: &Path) -> Result<bool, String> {
+    if catalog_path.file_name().and_then(|name| name.to_str()) != Some("cockpit-model-catalog.json") {
+        return Err(format!("Refusing to remove a user model catalog: {}", catalog_path.display()));
+    }
+    let _guard = MANAGED_CATALOG_WRITE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let removed = crate::modules::atomic_write::remove_file_locked_preserving_backup(catalog_path)?;
+    if removed { remove_managed_catalog_meta(catalog_path); }
+    Ok(removed)
+}
+
 pub(crate) fn write_managed_catalog_meta_for_gateway(
     catalog_path: &Path,
     account_id: Option<&str>,
@@ -290,6 +300,15 @@ mod tests {
         let mut names = fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect::<Vec<_>>();
         names.sort();
         assert_eq!(names, vec!["cockpit-model-catalog.json", "cockpit-model-catalog.json.bak", "cockpit-model-catalog.meta.json", "cockpit-model-catalog.meta.json.bak", "user-models.json"]);
+        let latest = fs::read_to_string(&path).unwrap();
+        assert!(archive_and_remove_managed_catalog(&path).unwrap());
+        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(path.with_extension("json.bak")).unwrap(), latest);
+        assert!(archive_and_remove_managed_catalog(&user_path).is_err());
+        assert!(write_managed_model_catalog(&path, &second.to_string(), Some("key-oai")).unwrap());
+        let recovered: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(recovered["models"].as_array().unwrap().iter().any(|model| model["slug"] == "vendor/model-v9" && model["display_name"] == "My Vendor Model"));
+        assert!(!dir.join("cockpit-model-catalog.json.bak.bak").exists());
         fs::remove_dir_all(dir).unwrap();
     }
 

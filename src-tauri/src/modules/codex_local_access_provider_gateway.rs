@@ -3104,8 +3104,7 @@ pub fn cleanup_provider_gateway_profile_model_overrides(profile_dir: &Path) -> R
     }
 
     if catalog_path.exists() {
-        std::fs::remove_file(&catalog_path)
-            .map_err(|e| format!("删除 Codex provider 模型目录失败: {}", e))?;
+        crate::modules::codex_managed_model_catalog_version::archive_and_remove_managed_catalog(&catalog_path)?;
     }
     codex_account::cleanup_legacy_managed_model_catalogs(profile_dir);
     codex_account::reapply_experimental_model_policy_if_enabled(profile_dir)?;

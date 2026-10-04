@@ -1661,13 +1661,7 @@ fn cleanup_deepseek_official_model_catalog_for_dir(base_dir: &Path) -> Result<bo
     let mut changed = false;
     let catalog_path = deepseek_official_model_catalog_path(base_dir);
     if catalog_path.exists() && official_catalog_file_looks_like_deepseek(&catalog_path) {
-        fs::remove_file(&catalog_path).map_err(|e| {
-            format!(
-                "删除 DeepSeek 官方模型目录失败: path={}, error={}",
-                catalog_path.display(),
-                e
-            )
-        })?;
+        crate::modules::codex_managed_model_catalog_version::archive_and_remove_managed_catalog(&catalog_path)?;
         changed = true;
     }
 

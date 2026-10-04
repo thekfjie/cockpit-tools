@@ -300,6 +300,23 @@ pub fn write_bytes_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Preserve the latest valid contents in the fixed backup before removing a file.
+pub fn remove_file_locked_preserving_backup(path: &Path) -> Result<bool, String> {
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "File write lock is poisoned".to_string())?;
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format_io_error("Read before removal", path, &error)),
+    };
+    if content_is_safe_backup_source(path, &content) {
+        let backup = build_backup_path(path)?;
+        write_string_atomic_internal(&backup, &content, false)?;
+    }
+    fs::remove_file(path).map_err(|error| format_io_error("Remove backed up file", path, &error))?;
+    Ok(true)
+}
+
 pub fn remove_file_locked(path: &Path) -> Result<bool, String> {
     let lock = path_write_lock(path)?;
     let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;

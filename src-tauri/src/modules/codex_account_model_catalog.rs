@@ -2057,7 +2057,7 @@ fn write_quick_config_to_config_toml_with_default_mode(
         && (remove_experimental_catalog_after_write
             || (disabling_experimental_catalog && had_experimental_model_control_state));
     if remove_managed_catalog_after_write {
-        crate::modules::atomic_write::remove_file_locked(&experimental_model_catalog_path(base_dir))
+        crate::modules::codex_managed_model_catalog_version::archive_and_remove_managed_catalog(&experimental_model_catalog_path(base_dir))
             .map_err(|error| {
                 format!(
                     "配置已停用，但清理 Codex 受管模型目录失败: profile={}, error={}",
@@ -2604,7 +2604,7 @@ fn cleanup_experimental_model_catalog_for_dir(base_dir: &Path) -> Result<(), Str
     }
 
     if managed_catalog_path.exists() {
-        crate::modules::atomic_write::remove_file_locked(&managed_catalog_path).map_err(
+        crate::modules::codex_managed_model_catalog_version::archive_and_remove_managed_catalog(&managed_catalog_path).map_err(
             |error| {
                 format!(
                     "清理 Codex 实验模型目录失败: path={}, error={}",
@@ -2905,13 +2905,11 @@ fn cleanup_managed_model_catalog_for_dir(base_dir: &Path) -> Result<bool, String
     ] {
         let catalog_path = base_dir.join(file_name);
         if catalog_path.exists() {
-            fs::remove_file(&catalog_path).map_err(|e| {
-                format!(
-                    "删除 Codex 模型目录失败: path={}, error={}",
-                    catalog_path.display(),
-                    e
-                )
-            })?;
+            if file_name == CODEX_MANAGED_MODEL_CATALOG_FILE {
+                crate::modules::codex_managed_model_catalog_version::archive_and_remove_managed_catalog(&catalog_path)?;
+            } else {
+                crate::modules::atomic_write::remove_file_locked(&catalog_path)?;
+            }
             crate::modules::codex_managed_model_catalog_version::remove_managed_catalog_meta(
                 &catalog_path,
             );
