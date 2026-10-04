@@ -138,7 +138,39 @@ jobs:
         run: |
           $env:COCKPIT_CATALOG_CONTRACT_OUTPUT = Join-Path $env:RUNNER_TEMP 'catalog-contract-fixtures'
           cargo test -p cockpit-tools --lib catalog -- --test-threads=1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            $testExit = $LASTEXITCODE
+            $testExe = Get-ChildItem -Path 'target/debug/deps' -Filter 'antigravity_cockpit_tools_lib-*.exe' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+            $vsRoot = & $vswhere -latest -property installationPath
+            $dumpbin = Get-ChildItem -Path "$vsRoot/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" -File | Sort-Object FullName -Descending | Select-Object -First 1
+            $imports = & $dumpbin.FullName /imports $testExe.FullName
+            $imports | Out-File windows-test-imports.log
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class CatalogLoaderProbe {
+            [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr LoadLibraryW(string name);
+            [DllImport("kernel32", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)] public static extern IntPtr GetProcAddress(IntPtr module, string name);
+            [DllImport("kernel32")] public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+            $module = [IntPtr]::Zero
+            $library = ''
+            foreach ($line in $imports) {
+              if ($line -match '^\s+(\S+\.dll)\s*$') {
+                if ($module -ne [IntPtr]::Zero) { [void][CatalogLoaderProbe]::FreeLibrary($module) }
+                $library = $Matches[1]
+                $module = [CatalogLoaderProbe]::LoadLibraryW($library)
+                if ($module -eq [IntPtr]::Zero) { Write-Output "LOAD FAILED: $library" }
+              } elseif ($module -ne [IntPtr]::Zero -and $line -match '^\s+[0-9A-Fa-f]{1,4}\s+([A-Za-z_?][^\s]*)\s*$') {
+                $symbol = $Matches[1]
+                if ([CatalogLoaderProbe]::GetProcAddress($module, $symbol) -eq [IntPtr]::Zero) { Write-Output "MISSING ENTRY: $library!$symbol" }
+              }
+            }
+            if ($module -ne [IntPtr]::Zero) { [void][CatalogLoaderProbe]::FreeLibrary($module) }
+            exit $testExit
+          }
           cargo test -p cockpit-tools --lib model_slots -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p cockpit-tools --lib responses_sync_catalog_with_custom_models -- --test-threads=1
@@ -169,7 +201,9 @@ jobs:
           name: cockpit-tools-windows-build-log
           retention-days: 14
           if-no-files-found: warn
-          path: build-windows.log
+          path: |
+            build-windows.log
+            windows-test-imports.log
 
       - name: Collect Windows installer and executable
         shell: pwsh
