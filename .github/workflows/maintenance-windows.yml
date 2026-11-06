@@ -1,0 +1,81 @@
+name: Windows maintenance build
+run-name: Windows maintenance · ${{ github.ref_name }}
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: maintenance-windows-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: maintenance-windows-release-v1
+      - name: Install frontend dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Frontend and release regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee frontend-tests.log
+          npm run test:release 2>&1 | tee release-tests.log
+          node scripts/check_locales.cjs
+      - name: Production frontend and type check
+        run: npm run build
+      - name: Account and project compatibility regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p cockpit-tools --lib --release --locked --features tauri/custom-protocol account_project_switch -- --test-threads=1 2>&1 | tee project-switch-tests.log
+          cargo test -p cockpit-tools --lib --release --locked --features tauri/custom-protocol codex_local_project_recovery -- --test-threads=1 2>&1 | tee project-recovery-tests.log
+      - name: Build Windows installer with embedded frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tauri build --ci --bundles nsis --features tauri/custom-protocol --config '{"bundle":{"createUpdaterArtifacts":false}}' 2>&1 | tee windows-build.log
+      - name: Verify package and embedded-resource configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter '*.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          if (!(Test-Path -LiteralPath dist/index.html)) { throw 'Production frontend missing' }
+          $exe = Get-Item -LiteralPath target/release/cockpit-tools.exe
+          $config = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($config.build.frontendDist -ne '../dist') { throw 'Unexpected frontend resource path' }
+          $installers | Get-FileHash -Algorithm SHA256 | Format-List | Out-File package-sha256.txt
+          "Version: $($exe.VersionInfo.ProductVersion)" | Add-Content package-sha256.txt
+          "Embedded frontend: release build with tauri/custom-protocol" | Add-Content package-sha256.txt
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: cockpit-windows-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            target/release/bundle/nsis/*.exe
+            package-sha256.txt
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-maintenance-logs-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            *-tests.log
+            windows-build.log
