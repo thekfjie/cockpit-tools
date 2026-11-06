@@ -2,9 +2,6 @@ name: Windows maintenance build
 run-name: Windows maintenance · ${{ github.ref_name }}
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - independent/windows-1.3.79-project-switch
 permissions:
   contents: read
 concurrency:
